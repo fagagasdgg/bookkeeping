@@ -1,0 +1,61 @@
+:root {
+  color-scheme: light;
+  --bg: #f3efe6;
+  --bg-accent: #e7f0ea;
+  --ink: #1c2421;
+  --muted: #5d6b66;
+  --card: rgba(255, 252, 246, 0.92);
+  --line: rgba(28, 36, 33, 0.1);
+  --brand: #0f6b4c;
+  --brand-soft: #d7eee3;
+  --danger: #9b2c2c;
+  --expense: #b42318;
+  --income: #0f6b4c;
+  --shadow: 0 18px 40px rgba(28, 36, 33, 0.08);
+  --radius: 18px;
+  --nav-h: 64px;
+  --max: 1120px;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.45;
+  font-weight: 400;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #d9efe4 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #f7e7c8 0%, transparent 50%),
+    var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  min-width: 320px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

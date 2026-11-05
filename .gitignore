@@ -1,0 +1,29 @@
+# Dependencies / build
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Android / IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.iml
+.gradle/
+local.properties
+*.apk
+*.aab
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Capacitor generated noise
+app/android/app/build/
+app/android/build/
+app/android/.gradle/
+app/android/capacitor-cordova-android-plugins/build/
+
+# Env
+.env
+.env.*
+*.local
