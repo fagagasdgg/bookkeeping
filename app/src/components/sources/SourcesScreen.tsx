@@ -7,6 +7,7 @@ import {
   removeSmsFilter,
   probeFilterSenders,
   scanAllSmsFilters,
+  scanConversationByNeedle,
   scanRecentByBodyKeywords,
   scanSmsByFilter,
 } from '../../services/smsFilters';
@@ -144,12 +145,12 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
             可读取收件箱历史短信。配置号码或备注后点「检索」，与实时监听共用指纹去重，不会把同一条短信记两遍。
           </p>
           <div className="callout warn">
-            <strong>推荐：不要死磕发件人，改扫正文。</strong>
-            工行动账常含「工商银行 / 尾号 / 支出 / 收入 / xx元」。点「按正文扫描动账短信」会遍历最新短信正文；命中后会把系统真实发件号打印出来，便于以后适配。
+            <strong>iQOO 关键：列表里 95588 只有一条，点开却有很多动账。</strong>
+            那是「会话」不是单条短信。请点「拉取 95588 会话全部动账」：先用 95588 定位会话，再把会话里每条短信整串读出并记账。
             <br />
-            iQOO/vivo：设置 → 应用与权限 → 权限管理 → 短信，确认本应用可读取；并打开应用详情里相关权限。
+            也可继续用「按正文扫描」做兜底；命中后会打印系统真实发件号。
             <br />
-            同时保持通知使用权：短信库仍受限时，可用短信通知兜底。
+            iQOO/vivo：设置 → 应用与权限 → 权限管理 → 短信，确认本应用可读取。
           </div>
           <p className="status-line">
             短信权限：{smsGranted ? <span className="ok">已授权</span> : <span className="warn">未授权</span>}
@@ -217,6 +218,43 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
             <button
               type="button"
               className="primary-btn"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const r = await scanConversationByNeedle({
+                    needle: '95588',
+                    limit: 5000,
+                    label: '工商银行',
+                  });
+                  const created = r.results.filter((x) => x.action === 'created' || x.action === 'merged').length;
+                  const dup = r.results.filter((x) => x.action === 'duplicate').length;
+                  const failed = r.results.filter((x) => x.action === 'parse_failed').length;
+                  if (r.conversationCount === 0) {
+                    toast(
+                      '系统短信库里定位不到含 95588 的会话。请确认短信权限已开；若短信 App 能打开但这里为 0，多半是厂商「服务号/智能短信」未对第三方开放。',
+                    );
+                  } else if (r.matched === 0) {
+                    toast(
+                      `已定位会话，共 ${r.conversationCount} 条短信（seed ${r.seedHits}），但未识别出动账正文。真实发件号：${r.discoveredSenders.slice(0, 4).join(' / ') || '无'}`,
+                    );
+                  } else {
+                    toast(
+                      `95588 会话 ${r.conversationCount} 条，动账 ${r.matched}。发件号：${r.discoveredSenders.slice(0, 4).join(' / ')}。写入 ${created}，重复 ${dup}${failed ? `，解析失败 ${failed}` : ''}`,
+                    );
+                  }
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : '会话拉取失败');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              拉取 95588 会话全部动账
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
               disabled={busy}
               onClick={async () => {
                 setBusy(true);

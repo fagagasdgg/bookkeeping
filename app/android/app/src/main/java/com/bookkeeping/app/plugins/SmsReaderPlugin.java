@@ -233,6 +233,163 @@ public class SmsReaderPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * Locate SMS conversations by needle (e.g. 95588) then pull ALL messages in those threads.
+     * Mirrors the phone SMS app UX: one list row → many messages inside the chat.
+     */
+    @PluginMethod
+    public void queryConversation(PluginCall call) {
+        if (!hasSmsPermission()) {
+            call.reject("READ_SMS permission not granted");
+            return;
+        }
+        String needle = call.getString("needle", "");
+        if (needle == null) needle = "";
+        needle = needle.trim();
+        if (needle.isEmpty()) {
+            call.reject("needle is required, e.g. 95588");
+            return;
+        }
+        int limit = call.getInt("limit", 5000);
+        ContentResolver resolver = getContext().getContentResolver();
+        Uri uri = Telephony.Sms.CONTENT_URI;
+        String[] projection = new String[]{
+            Telephony.Sms._ID,
+            Telephony.Sms.ADDRESS,
+            Telephony.Sms.BODY,
+            Telephony.Sms.DATE,
+            Telephony.Sms.PERSON,
+            Telephony.Sms.TYPE,
+            Telephony.Sms.THREAD_ID
+        };
+
+        java.util.LinkedHashSet<Long> threadIds = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> seedAddresses = new java.util.LinkedHashSet<>();
+        int seedHits = 0;
+
+        // Pass 1: find any inbox-ish rows whose address/body mentions the needle → collect thread_ids.
+        String like = "%" + needle + "%";
+        try (Cursor cursor = resolver.query(
+            uri,
+            projection,
+            "(" + Telephony.Sms.TYPE + "=1 OR " + Telephony.Sms.TYPE + " IS NULL) AND ("
+                + Telephony.Sms.ADDRESS + " LIKE ? OR " + Telephony.Sms.BODY + " LIKE ?)",
+            new String[]{like, like},
+            Telephony.Sms.DATE + " DESC"
+        )) {
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    seedHits++;
+                    if (!cursor.isNull(6)) {
+                        threadIds.add(cursor.getLong(6));
+                    }
+                    String addr = cursor.getString(1);
+                    if (addr != null && !addr.isEmpty()) seedAddresses.add(addr);
+                    // Cap seed scan so we don't hang on huge DBs; thread pull is the real source.
+                    if (seedHits >= 800) break;
+                }
+            }
+        } catch (Exception e) {
+            call.reject("queryConversation seed failed: " + e.getMessage(), e);
+            return;
+        }
+
+        JSArray messages = new JSArray();
+        java.util.LinkedHashMap<Long, JSObject> byId = new java.util.LinkedHashMap<>();
+        java.util.LinkedHashSet<String> discoveredAddresses = new java.util.LinkedHashSet<>();
+
+        // Pass 2a: pull every message belonging to discovered threads (full conversation).
+        if (!threadIds.isEmpty()) {
+            StringBuilder in = new StringBuilder();
+            java.util.ArrayList<String> args = new java.util.ArrayList<>();
+            for (Long tid : threadIds) {
+                if (in.length() > 0) in.append(",");
+                in.append("?");
+                args.add(String.valueOf(tid));
+            }
+            String selection =
+                "(" + Telephony.Sms.TYPE + "=1 OR " + Telephony.Sms.TYPE + " IS NULL) AND "
+                    + Telephony.Sms.THREAD_ID + " IN (" + in + ")";
+            try (Cursor cursor = resolver.query(
+                uri,
+                projection,
+                selection,
+                args.toArray(new String[0]),
+                Telephony.Sms.DATE + " DESC"
+            )) {
+                if (cursor != null) {
+                    while (cursor.moveToNext() && byId.size() < limit) {
+                        putConversationMessage(byId, discoveredAddresses, cursor);
+                    }
+                }
+            } catch (Exception e) {
+                call.reject("queryConversation thread pull failed: " + e.getMessage(), e);
+                return;
+            }
+        }
+
+        // Pass 2b: fallback / supplement — address LIKE needle (covers OEMs with null thread_id).
+        try (Cursor cursor = resolver.query(
+            uri,
+            projection,
+            "(" + Telephony.Sms.TYPE + "=1 OR " + Telephony.Sms.TYPE + " IS NULL) AND "
+                + Telephony.Sms.ADDRESS + " LIKE ?",
+            new String[]{like},
+            Telephony.Sms.DATE + " DESC"
+        )) {
+            if (cursor != null) {
+                while (cursor.moveToNext() && byId.size() < limit) {
+                    putConversationMessage(byId, discoveredAddresses, cursor);
+                }
+            }
+        } catch (Exception e) {
+            call.reject("queryConversation address pull failed: " + e.getMessage(), e);
+            return;
+        }
+
+        for (JSObject msg : byId.values()) {
+            messages.put(msg);
+            if (messages.length() >= limit) break;
+        }
+
+        JSArray threads = new JSArray();
+        for (Long tid : threadIds) threads.put(tid);
+        JSArray addrs = new JSArray();
+        for (String a : discoveredAddresses) addrs.put(a);
+        JSArray seeds = new JSArray();
+        for (String a : seedAddresses) seeds.put(a);
+
+        JSObject ret = new JSObject();
+        ret.put("messages", messages);
+        ret.put("threadIds", threads);
+        ret.put("discoveredAddresses", addrs);
+        ret.put("seedAddresses", seeds);
+        ret.put("seedHits", seedHits);
+        ret.put("conversationCount", messages.length());
+        call.resolve(ret);
+    }
+
+    private static void putConversationMessage(
+        java.util.LinkedHashMap<Long, JSObject> byId,
+        java.util.LinkedHashSet<String> discoveredAddresses,
+        Cursor cursor
+    ) {
+        long id = cursor.getLong(0);
+        if (byId.containsKey(id)) return;
+        String addr = cursor.getString(1);
+        String body = cursor.getString(2);
+        JSObject msg = new JSObject();
+        msg.put("id", id);
+        msg.put("address", addr == null ? "" : addr);
+        msg.put("body", body == null ? "" : body);
+        msg.put("date", cursor.getLong(3));
+        String person = cursor.isNull(4) ? null : cursor.getString(4);
+        if (person != null) msg.put("person", person);
+        if (!cursor.isNull(6)) msg.put("threadId", cursor.getLong(6));
+        byId.put(id, msg);
+        if (addr != null && !addr.isEmpty()) discoveredAddresses.add(addr);
+    }
+
     @PluginMethod
     public void probeSenders(PluginCall call) {
         if (!hasSmsPermission()) {

@@ -6,6 +6,7 @@ export interface NativeSmsMessage {
   body: string;
   date: number;
   person?: string;
+  threadId?: number;
 }
 
 export interface SmsQueryOptions {
@@ -34,11 +35,21 @@ export interface SmsInboxDiagnosis {
   rawAddresses?: string[];
 }
 
+export interface SmsConversationResult {
+  messages: NativeSmsMessage[];
+  threadIds: number[];
+  discoveredAddresses: string[];
+  seedAddresses: string[];
+  seedHits: number;
+  conversationCount: number;
+}
+
 interface SmsReaderPlugin {
   checkPermission(): Promise<{ granted: boolean }>;
   requestPermission(): Promise<{ granted: boolean }>;
   queryInbox(options: SmsQueryOptions): Promise<{ messages: NativeSmsMessage[] }>;
   queryRecent(options?: { limit?: number }): Promise<{ messages: NativeSmsMessage[] }>;
+  queryConversation(options: { needle: string; limit?: number }): Promise<SmsConversationResult>;
   probeSenders(options?: { limit?: number; needle?: string }): Promise<{ samples: SmsSenderSample[] }>;
   diagnoseInbox(): Promise<SmsInboxDiagnosis>;
   openAppPermissionSettings(): Promise<{ opened: boolean }>;
@@ -89,6 +100,32 @@ export async function queryRecentSms(limit = 300): Promise<NativeSmsMessage[]> {
   }
   const res = await SmsReaderNative.queryRecent({ limit });
   return res.messages ?? [];
+}
+
+/**
+ * 按会话拉取：用 needle（如 95588）定位会话 thread，再取出该会话里全部短信。
+ * 对应手机短信 App「列表一条 → 点开很多条」的模型。
+ */
+export async function queryConversationSms(
+  needle: string,
+  limit = 5000,
+): Promise<SmsConversationResult> {
+  const n = needle.trim();
+  if (!Capacitor.isNativePlatform()) {
+    const messages = webStore
+      .filter((m) => `${m.address}\n${m.body}`.includes(n))
+      .slice(0, limit);
+    const addresses = [...new Set(messages.map((m) => m.address).filter(Boolean))];
+    return {
+      messages,
+      threadIds: [],
+      discoveredAddresses: addresses,
+      seedAddresses: addresses,
+      seedHits: messages.length,
+      conversationCount: messages.length,
+    };
+  }
+  return SmsReaderNative.queryConversation({ needle: n, limit });
 }
 
 export async function probeSmsSenders(options?: {

@@ -4,6 +4,7 @@ import { emitDataChange } from './events';
 import { ingestMany } from './ingest';
 import {
   probeSmsSenders,
+  queryConversationSms,
   queryInboxSms,
   queryRecentSms,
   type NativeSmsMessage,
@@ -125,11 +126,19 @@ export async function scanSmsByFilter(filter: SmsSourceFilter): Promise<{
 }> {
   const keywords = filterKeywords(filter);
 
-  // Body-first query: do NOT require address at native layer.
-  // Walk recent messages and match by body keywords / ledger heuristics.
+  // Prefer conversation pull when address is known (one SMS-app row → many messages).
   let messages: NativeSmsMessage[];
-  if (keywords.length > 0) {
-    // Prefer keyword SQL for speed; also pull recent unfiltered as backup merge.
+  if (filter.address) {
+    const conv = await queryConversationSms(filter.address, 5000);
+    const map = new Map<number, NativeSmsMessage>();
+    for (const m of conv.messages) map.set(m.id, m);
+    if (keywords.length > 0) {
+      const byKeyword = await queryInboxSms({ bodyContains: keywords[0], limit: 2000 });
+      for (const m of byKeyword) map.set(m.id, m);
+    }
+    messages = [...map.values()];
+  } else if (keywords.length > 0) {
+    // Body-first: do NOT require address at native layer.
     const byKeyword = await queryInboxSms({
       bodyContains: keywords[0],
       limit: 2000,
@@ -138,8 +147,6 @@ export async function scanSmsByFilter(filter: SmsSourceFilter): Promise<{
     const map = new Map<number, NativeSmsMessage>();
     for (const m of [...byKeyword, ...recent]) map.set(m.id, m);
     messages = [...map.values()];
-  } else if (filter.address) {
-    messages = await queryInboxSms({ address: filter.address, limit: 2000 });
   } else {
     messages = await queryRecentSms(400);
   }
@@ -220,6 +227,84 @@ export async function scanRecentByBodyKeywords(options?: {
 
   return {
     scanned: recent.length,
+    matched: matchedMsgs.length,
+    results,
+    hits,
+    discoveredSenders,
+  };
+}
+
+/**
+ * 按会话整串拉取：用 95588 等定位短信 App 里那一条会话，取出里面全部短信再筛动账。
+ */
+export async function scanConversationByNeedle(options: {
+  needle: string;
+  limit?: number;
+  label?: string;
+}): Promise<{
+  needle: string;
+  conversationCount: number;
+  seedHits: number;
+  threadIds: number[];
+  matched: number;
+  results: IngestResult[];
+  hits: Array<{ address: string; preview: string; date: number }>;
+  discoveredSenders: string[];
+}> {
+  const needle = options.needle.trim();
+  if (!needle) throw new Error('请提供会话定位关键字，如 95588');
+
+  const conv = await queryConversationSms(needle, options.limit ?? 5000);
+  const matchedMsgs = conv.messages.filter((m) => {
+    const body = m.body || '';
+    // 会话内：有金额格式就尽量收下；再叠加银行关键字提高精度
+    if (bodyLooksLikeLedgerSms(body)) return true;
+    const hasAmount = /\d+(?:\.\d{1,2})?\s*元/.test(body) || /(?:￥|¥)\s*\d/.test(body);
+    const bankish =
+      body.includes('工商银行') ||
+      body.includes('尾号') ||
+      body.includes('支出') ||
+      body.includes('收入') ||
+      body.includes('入账') ||
+      /【.+银行】/.test(body) ||
+      (m.address || '').includes(needle);
+    return hasAmount && bankish;
+  });
+
+  const hits = matchedMsgs.slice(0, 30).map((m) => ({
+    address: m.address || '(空地址)',
+    preview: (m.body || '').slice(0, 80),
+    date: m.date,
+  }));
+  const discoveredSenders = [
+    ...new Set([
+      ...conv.discoveredAddresses,
+      ...matchedMsgs.map((m) => m.address || '(空地址)'),
+    ]),
+  ];
+
+  const results = await ingestMany(
+    matchedMsgs.map((m) => ({
+      channel: 'sms' as const,
+      packageOrAddress: m.address,
+      title: options.label || `会话 ${needle}`,
+      body: m.body,
+      occurredAt: m.date,
+      nativeId: String(m.id),
+      meta: {
+        via: 'conversation-scan',
+        needle,
+        threadId: m.threadId != null ? String(m.threadId) : '',
+        discoveredAddress: m.address || '',
+      },
+    })),
+  );
+
+  return {
+    needle,
+    conversationCount: conv.conversationCount,
+    seedHits: conv.seedHits,
+    threadIds: conv.threadIds ?? [],
     matched: matchedMsgs.length,
     results,
     hits,
