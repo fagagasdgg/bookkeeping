@@ -92,36 +92,42 @@ public class SmsReaderPlugin extends Plugin {
         String bodyContains = call.getString("bodyContains");
         int limit = call.getInt("limit", 2000);
 
-        Uri uri = Telephony.Sms.Inbox.CONTENT_URI;
+        // Use all-sms table (not only inbox view) — some OEMs classify differently.
+        Uri uri = Telephony.Sms.CONTENT_URI;
         ContentResolver resolver = getContext().getContentResolver();
         String[] projection = new String[]{
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
             Telephony.Sms.BODY,
             Telephony.Sms.DATE,
-            Telephony.Sms.PERSON
+            Telephony.Sms.PERSON,
+            Telephony.Sms.TYPE
         };
 
         // Prefer SQL LIKE so OEM-prefixed numbers like 1069...95588 still hit.
-        String selection = null;
-        String[] selectionArgs = null;
+        // Restrict to inbox-like types (1=inbox, also accept unknown).
+        StringBuilder sel = new StringBuilder("(" + Telephony.Sms.TYPE + "=1 OR " + Telephony.Sms.TYPE + " IS NULL)");
+        java.util.ArrayList<String> args = new java.util.ArrayList<>();
         boolean hasAddress = address != null && !address.isEmpty();
         boolean hasBody = bodyContains != null && !bodyContains.isEmpty();
         if (hasAddress && hasBody) {
-            selection = "(" + Telephony.Sms.ADDRESS + " LIKE ? OR " + Telephony.Sms.BODY + " LIKE ? OR "
-                + Telephony.Sms.BODY + " LIKE ?)";
-            selectionArgs = new String[]{
-                "%" + address + "%",
-                "%" + bodyContains + "%",
-                "%" + address + "%"
-            };
+            sel.append(" AND (").append(Telephony.Sms.ADDRESS).append(" LIKE ? OR ")
+                .append(Telephony.Sms.BODY).append(" LIKE ? OR ")
+                .append(Telephony.Sms.BODY).append(" LIKE ?)");
+            args.add("%" + address + "%");
+            args.add("%" + bodyContains + "%");
+            args.add("%" + address + "%");
         } else if (hasAddress) {
-            selection = "(" + Telephony.Sms.ADDRESS + " LIKE ? OR " + Telephony.Sms.BODY + " LIKE ?)";
-            selectionArgs = new String[]{"%" + address + "%", "%" + address + "%"};
+            sel.append(" AND (").append(Telephony.Sms.ADDRESS).append(" LIKE ? OR ")
+                .append(Telephony.Sms.BODY).append(" LIKE ?)");
+            args.add("%" + address + "%");
+            args.add("%" + address + "%");
         } else if (hasBody) {
-            selection = Telephony.Sms.BODY + " LIKE ?";
-            selectionArgs = new String[]{"%" + bodyContains + "%"};
+            sel.append(" AND ").append(Telephony.Sms.BODY).append(" LIKE ?");
+            args.add("%" + bodyContains + "%");
         }
+        String selection = sel.toString();
+        String[] selectionArgs = args.toArray(new String[0]);
 
         JSArray messages = new JSArray();
         try (Cursor cursor = resolver.query(
@@ -172,6 +178,56 @@ public class SmsReaderPlugin extends Plugin {
             return;
         }
 
+        JSObject ret = new JSObject();
+        ret.put("messages", messages);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void queryRecent(PluginCall call) {
+        if (!hasSmsPermission()) {
+            call.reject("READ_SMS permission not granted");
+            return;
+        }
+        int limit = call.getInt("limit", 300);
+        Uri uri = Telephony.Sms.CONTENT_URI;
+        ContentResolver resolver = getContext().getContentResolver();
+        String[] projection = new String[]{
+            Telephony.Sms._ID,
+            Telephony.Sms.ADDRESS,
+            Telephony.Sms.BODY,
+            Telephony.Sms.DATE,
+            Telephony.Sms.PERSON,
+            Telephony.Sms.TYPE
+        };
+        JSArray messages = new JSArray();
+        try (Cursor cursor = resolver.query(
+            uri,
+            projection,
+            Telephony.Sms.TYPE + "=1 OR " + Telephony.Sms.TYPE + " IS NULL",
+            null,
+            Telephony.Sms.DATE + " DESC"
+        )) {
+            if (cursor != null) {
+                int count = 0;
+                while (cursor.moveToNext() && count < limit) {
+                    JSObject msg = new JSObject();
+                    msg.put("id", cursor.getLong(0));
+                    String addr = cursor.getString(1);
+                    msg.put("address", addr == null ? "" : addr);
+                    String body = cursor.getString(2);
+                    msg.put("body", body == null ? "" : body);
+                    msg.put("date", cursor.getLong(3));
+                    String person = cursor.isNull(4) ? null : cursor.getString(4);
+                    if (person != null) msg.put("person", person);
+                    messages.put(msg);
+                    count++;
+                }
+            }
+        } catch (Exception e) {
+            call.reject("queryRecent failed: " + e.getMessage(), e);
+            return;
+        }
         JSObject ret = new JSObject();
         ret.put("messages", messages);
         call.resolve(ret);
@@ -233,33 +289,45 @@ public class SmsReaderPlugin extends Plugin {
         ret.put("brand", brand);
         ret.put("permissionGranted", hasSmsPermission());
         ret.put("oemLikelyXiaomiFamily", isXiaomiFamily(manufacturer, brand));
+        ret.put("oemLikelyVivoFamily", isVivoFamily(manufacturer, brand));
+        JSArray rawAddresses = new JSArray();
 
         if (!hasSmsPermission()) {
             ret.put("totalInbox", 0);
             ret.put("bankLikeCount", 0);
             ret.put("likelyMissingNotificationSms", false);
-            ret.put("hint", "系统短信权限未授予。请先申请 READ_SMS。");
+            ret.put("rawAddresses", rawAddresses);
+            ret.put("hint", "系统短信权限未授予。请先申请读取短信。");
             call.resolve(ret);
             return;
         }
 
         int total = 0;
         int bankLike = 0;
-        Uri uri = Telephony.Sms.Inbox.CONTENT_URI;
+        // Scan full sms table — notification/service SMS still live here once OEM permission is on.
+        Uri uri = Telephony.Sms.CONTENT_URI;
         ContentResolver resolver = getContext().getContentResolver();
-        String[] projection = new String[]{Telephony.Sms.ADDRESS, Telephony.Sms.BODY};
-        try (Cursor cursor = resolver.query(uri, projection, null, null, null)) {
+        String[] projection = new String[]{
+            Telephony.Sms.ADDRESS,
+            Telephony.Sms.BODY,
+            Telephony.Sms.TYPE
+        };
+        try (Cursor cursor = resolver.query(uri, projection, null, null, Telephony.Sms.DATE + " DESC")) {
             if (cursor != null) {
                 while (cursor.moveToNext()) {
                     total++;
                     String addr = cursor.getString(0);
                     String body = cursor.getString(1);
+                    if (rawAddresses.length() < 15) {
+                        rawAddresses.put(addr == null ? "(空地址)" : addr);
+                    }
                     String blob = ((addr == null ? "" : addr) + "\n" + (body == null ? "" : body));
                     if (blob.contains("95588")
                         || blob.contains("工商银行")
                         || blob.contains("财付通")
                         || blob.contains("支出")
-                        || blob.contains("支付宝")) {
+                        || blob.contains("支付宝")
+                        || blob.contains("【") && blob.contains("银行")) {
                         bankLike++;
                     }
                 }
@@ -268,7 +336,8 @@ public class SmsReaderPlugin extends Plugin {
             ret.put("totalInbox", 0);
             ret.put("bankLikeCount", 0);
             ret.put("likelyMissingNotificationSms", true);
-            ret.put("hint", "读取收件箱失败：" + e.getMessage());
+            ret.put("rawAddresses", rawAddresses);
+            ret.put("hint", "读取短信库失败：" + e.getMessage());
             call.resolve(ret);
             return;
         }
@@ -277,18 +346,24 @@ public class SmsReaderPlugin extends Plugin {
         ret.put("totalInbox", total);
         ret.put("bankLikeCount", bankLike);
         ret.put("likelyMissingNotificationSms", likelyMissing);
+        ret.put("rawAddresses", rawAddresses);
         if (likelyMissing && isXiaomiFamily(manufacturer, brand)) {
             ret.put(
                 "hint",
-                "可读收件箱 " + total + " 条，但银行/支付类为 0。小米/红米需在应用权限里额外开启「通知类短信/服务短信」，仅有系统短信权限不够。"
+                "可读短信库 " + total + " 条，银行类 0。小米路径：设置→应用设置→本应用→其他权限→打开「通知类短信」。可再试「按正文扫描」。"
+            );
+        } else if (likelyMissing && isVivoFamily(manufacturer, brand)) {
+            ret.put(
+                "hint",
+                "可读短信库 " + total + " 条，银行类 0。iQOO/vivo：设置→应用与权限→权限管理→短信，确认本应用可读取；并到应用详情打开相关权限。请优先用「按正文扫描动账短信」。"
             );
         } else if (likelyMissing) {
             ret.put(
                 "hint",
-                "可读收件箱 " + total + " 条，但未发现银行类短信。请到系统「应用权限」确认短信相关权限全开；部分厂商会把 95588 等归为通知类短信单独控制。"
+                "可读短信库 " + total + " 条，银行类 0。请开通知类/服务短信权限，或用「按正文扫描」遍历最新短信正文关键字。"
             );
         } else {
-            ret.put("hint", "可读收件箱 " + total + " 条，其中疑似银行/支付相关 " + bankLike + " 条。");
+            ret.put("hint", "可读短信库 " + total + " 条，其中疑似银行/支付相关 " + bankLike + " 条。可继续点检索或按正文扫描。");
         }
         call.resolve(ret);
     }
@@ -345,6 +420,11 @@ public class SmsReaderPlugin extends Plugin {
         return blob.contains("xiaomi") || blob.contains("redmi") || blob.contains("poco");
     }
 
+    private static boolean isVivoFamily(String manufacturer, String brand) {
+        String blob = ((manufacturer == null ? "" : manufacturer) + " " + (brand == null ? "" : brand)).toLowerCase();
+        return blob.contains("vivo") || blob.contains("iqoo");
+    }
+
     @PluginMethod
     public void startWatching(PluginCall call) {
         if (!hasSmsPermission()) {
@@ -388,9 +468,17 @@ public class SmsReaderPlugin extends Plugin {
     }
 
     private static String normalizePhone(String address) {
-        String digits = address.replaceAll("\\D", "");
+        if (address == null) return "";
+        String s = address.trim();
+        s = s.replaceAll("[（(]\\s*卡\\s*[12]\\s*[)）]", "");
+        s = s.replaceAll("(?i)[-_]?sim\\s*[12]\\b", "");
+        s = s.replaceAll("[-_][12]$", "");
+        String digits = s.replaceAll("\\D", "");
         if (digits.length() == 13 && digits.startsWith("86")) {
             return digits.substring(2);
+        }
+        if (digits.length() == 14 && digits.startsWith("086")) {
+            return digits.substring(3);
         }
         return digits;
     }

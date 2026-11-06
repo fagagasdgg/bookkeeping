@@ -8,13 +8,25 @@ export function hashText(input: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * Normalize SMS sender for matching.
+ * Handles +86, dual-SIM suffixes like 95588-1 / 95588(卡1), spaces, etc.
+ */
 export function normalizePhone(address: string): string {
-  const digits = address.replace(/\D/g, '');
+  let s = (address || '').trim();
+  // Strip common dual-SIM / slot markers before digit extraction
+  s = s.replace(/[(（]\s*卡\s*[12]\s*[)）]/gi, '');
+  s = s.replace(/[-_]?sim\s*[12]\b/gi, '');
+  s = s.replace(/[-_][12]$/g, '');
+
+  const digits = s.replace(/\D/g, '');
   if (digits.length === 13 && digits.startsWith('86')) {
     return digits.slice(2);
   }
   if (digits.length === 14 && digits.startsWith('086')) {
     return digits.slice(3);
   }
-  return digits || address.trim().toLowerCase();
+  // Keep short codes like 95588 intact
+  if (digits.length >= 3) return digits;
+  return s.toLowerCase();
 }

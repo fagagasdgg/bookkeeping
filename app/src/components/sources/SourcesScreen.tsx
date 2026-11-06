@@ -7,6 +7,7 @@ import {
   removeSmsFilter,
   probeFilterSenders,
   scanAllSmsFilters,
+  scanRecentByBodyKeywords,
   scanSmsByFilter,
 } from '../../services/smsFilters';
 import { subscribeDataChange } from '../../services/events';
@@ -143,8 +144,12 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
             可读取收件箱历史短信。配置号码或备注后点「检索」，与实时监听共用指纹去重，不会把同一条短信记两遍。
           </p>
           <div className="callout warn">
-            <strong>重要：95588/银行短信常被厂商标成「通知类短信」。</strong>
-            小米/红米等即使系统「读取短信」已开，默认仍读不到银行通知短信。请到应用权限里额外打开「通知类短信 / 服务短信 / 读写通知类短信」。这不是匹配规则问题。
+            <strong>推荐：不要死磕发件人，改扫正文。</strong>
+            工行动账常含「工商银行 / 尾号 / 支出 / 收入 / xx元」。点「按正文扫描动账短信」会遍历最新短信正文；命中后会把系统真实发件号打印出来，便于以后适配。
+            <br />
+            iQOO/vivo：设置 → 应用与权限 → 权限管理 → 短信，确认本应用可读取；并打开应用详情里相关权限。
+            <br />
+            同时保持通知使用权：短信库仍受限时，可用短信通知兜底。
           </div>
           <p className="status-line">
             短信权限：{smsGranted ? <span className="ok">已授权</span> : <span className="warn">未授权</span>}
@@ -156,6 +161,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
             ) : null}
           </p>
           {smsDiag?.hint ? <p className="muted small">{smsDiag.hint}</p> : null}
+          {smsDiag?.rawAddresses && smsDiag.rawAddresses.length > 0 ? (
+            <p className="muted small">
+              最近可读到的原始发件号（未过滤）：{smsDiag.rawAddresses.slice(0, 10).join(' / ')}
+            </p>
+          ) : null}
           <div className="btn-row">
             <button
               type="button"
@@ -203,6 +213,39 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
               }}
             >
               诊断能否读到银行短信
+            </button>
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const r = await scanRecentByBodyKeywords({
+                    limit: 500,
+                    extraKeywords: ['工商银行', '尾号'],
+                  });
+                  const created = r.results.filter((x) => x.action === 'created' || x.action === 'merged').length;
+                  const dup = r.results.filter((x) => x.action === 'duplicate').length;
+                  if (r.matched === 0) {
+                    toast(
+                      r.scanned === 0
+                        ? '一条短信都读不到，请先开短信权限（iQOO 还需检查权限管理里的短信权限）'
+                        : `已扫最新 ${r.scanned} 条正文，未发现动账关键字。若短信 App 里明明有工行短信，多半仍被厂商隔离。`,
+                    );
+                  } else {
+                    toast(
+                      `正文命中 ${r.matched}（扫描 ${r.scanned}）。真实发件号：${r.discoveredSenders.slice(0, 5).join(' / ')}。写入 ${created}，重复 ${dup}`,
+                    );
+                  }
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : '正文扫描失败');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              按正文扫描动账短信
             </button>
             <button
               type="button"
@@ -358,19 +401,20 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                     onClick={async () => {
                       setBusy(true);
                       try {
-                        const { matched, results, scanned, sampleAddresses } = await scanSmsByFilter(f);
+                        const { matched, results, scanned, sampleAddresses, discoveredSenders } =
+                          await scanSmsByFilter(f);
                         const created = results.filter((r) => r.action === 'created' || r.action === 'merged').length;
                         const dup = results.filter((r) => r.action === 'duplicate').length;
                         const failed = results.filter((r) => r.action === 'parse_failed').length;
                         if (matched === 0) {
                           toast(
                             scanned === 0
-                              ? `「${f.label}」收件箱未读到相关短信（权限？或真实发件号不是 ${f.address || '所填号码'}）。请先点「探测发件号」。`
-                              : `「${f.label}」初筛 ${scanned} 条但未通过匹配。读到的发件号示例：${sampleAddresses.join(' / ') || '无'}`,
+                              ? `「${f.label}」收件箱未读到短信。请先「诊断」或「按正文扫描」。`
+                              : `「${f.label}」扫了 ${scanned} 条未命中。可读发件号示例：${sampleAddresses.join(' / ') || '无'}。建议改用「按正文扫描」。`,
                           );
                         } else {
                           toast(
-                            `「${f.label}」匹配 ${matched}，写入 ${created}，跳过重复 ${dup}${failed ? `，解析失败 ${failed}` : ''}`,
+                            `「${f.label}」匹配 ${matched}，写入 ${created}，重复 ${dup}${failed ? `，解析失败 ${failed}` : ''}。真实发件号：${discoveredSenders.slice(0, 4).join(' / ')}`,
                           );
                         }
                       } catch (e) {

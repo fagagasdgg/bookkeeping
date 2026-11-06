@@ -26,16 +26,19 @@ export interface SmsInboxDiagnosis {
   brand: string;
   permissionGranted: boolean;
   oemLikelyXiaomiFamily: boolean;
+  oemLikelyVivoFamily?: boolean;
   totalInbox: number;
   bankLikeCount: number;
   likelyMissingNotificationSms: boolean;
   hint: string;
+  rawAddresses?: string[];
 }
 
 interface SmsReaderPlugin {
   checkPermission(): Promise<{ granted: boolean }>;
   requestPermission(): Promise<{ granted: boolean }>;
   queryInbox(options: SmsQueryOptions): Promise<{ messages: NativeSmsMessage[] }>;
+  queryRecent(options?: { limit?: number }): Promise<{ messages: NativeSmsMessage[] }>;
   probeSenders(options?: { limit?: number; needle?: string }): Promise<{ samples: SmsSenderSample[] }>;
   diagnoseInbox(): Promise<SmsInboxDiagnosis>;
   openAppPermissionSettings(): Promise<{ opened: boolean }>;
@@ -79,6 +82,15 @@ export async function queryInboxSms(options: SmsQueryOptions = {}): Promise<Nati
   return res.messages ?? [];
 }
 
+/** 不按发件人过滤，直接取最新 N 条，供正文关键字扫描。 */
+export async function queryRecentSms(limit = 300): Promise<NativeSmsMessage[]> {
+  if (!Capacitor.isNativePlatform()) {
+    return webStore.slice(0, limit);
+  }
+  const res = await SmsReaderNative.queryRecent({ limit });
+  return res.messages ?? [];
+}
+
 export async function probeSmsSenders(options?: {
   limit?: number;
   needle?: string;
@@ -107,6 +119,7 @@ export async function diagnoseSmsInbox(): Promise<SmsInboxDiagnosis> {
         .length,
       likelyMissingNotificationSms: false,
       hint: '浏览器预览模式，使用内存样例短信。',
+      rawAddresses: webStore.slice(0, 15).map((m) => m.address || '(空地址)'),
     };
   }
   return SmsReaderNative.diagnoseInbox();

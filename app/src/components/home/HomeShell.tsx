@@ -3,6 +3,8 @@ import { ensureDefaultCategoryRules } from '../../services/classify';
 import { ingestCapture } from '../../services/ingest';
 import {
   isPaymentPackage,
+  isSmsAppPackage,
+  looksLikeBankSmsNotification,
   onNotificationCaptured,
   startNotifyListener,
   getActiveNotifications,
@@ -60,8 +62,35 @@ export function HomeShell() {
     void startSmsWatching();
     void getActiveNotifications().then(async (list) => {
       for (const n of list) {
-        if (!isPaymentPackage(n.packageName)) continue;
-        await ingestCapture({
+        if (isPaymentPackage(n.packageName)) {
+          await ingestCapture({
+            channel: 'notify',
+            packageOrAddress: n.packageName,
+            title: n.title,
+            body: n.text,
+            occurredAt: n.postTime,
+            nativeId: n.key,
+          });
+          continue;
+        }
+        if (isSmsAppPackage(n.packageName) && looksLikeBankSmsNotification(n.title, n.text)) {
+          await ingestCapture({
+            channel: 'sms',
+            packageOrAddress: n.title || n.packageName,
+            title: n.title,
+            body: n.text,
+            occurredAt: n.postTime,
+            nativeId: n.key,
+            meta: { via: 'sms-app-notification' },
+          });
+        }
+      }
+    });
+
+    // nativeBridge already ingests; this covers in-app emits / tests with fingerprint dedupe.
+    const off = onNotificationCaptured((n) => {
+      if (isPaymentPackage(n.packageName)) {
+        void ingestCapture({
           channel: 'notify',
           packageOrAddress: n.packageName,
           title: n.title,
@@ -69,19 +98,19 @@ export function HomeShell() {
           occurredAt: n.postTime,
           nativeId: n.key,
         });
+        return;
       }
-    });
-
-    const off = onNotificationCaptured((n) => {
-      if (!isPaymentPackage(n.packageName)) return;
-      void ingestCapture({
-        channel: 'notify',
-        packageOrAddress: n.packageName,
-        title: n.title,
-        body: n.text,
-        occurredAt: n.postTime,
-        nativeId: n.key,
-      });
+      if (isSmsAppPackage(n.packageName) && looksLikeBankSmsNotification(n.title, n.text)) {
+        void ingestCapture({
+          channel: 'sms',
+          packageOrAddress: n.title || n.packageName,
+          title: n.title,
+          body: n.text,
+          occurredAt: n.postTime,
+          nativeId: n.key,
+          meta: { via: 'sms-app-notification' },
+        });
+      }
     });
     return off;
   }, [showOnboarding, ready]);
