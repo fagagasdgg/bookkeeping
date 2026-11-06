@@ -77,12 +77,48 @@
   color: var(--ink);
 }
 
+.callout {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.callout.warn {
+  background: #fff4df;
+  border: 1px solid rgba(154, 103, 0, 0.22);
+  color: #6b4e00;
+}
+
+.callout strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.filter-row {
+  align-items: flex-start;
+}
+
+.filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.filter-actions .danger-btn,
+.filter-actions .ghost-btn {
+  min-height: 44px;
+  padding: 0.65rem 1rem;
+}
+
 .app-main {
   flex: 1;
   width: min(100%, var(--max));
   margin: 0 auto;
   padding: clamp(16px, 3vw, 28px);
-  padding-bottom: calc(var(--nav-h) + 24px);
+  padding-bottom: calc(var(--nav-h) + var(--nav-safe) + 28px);
 }
 
 .bottom-nav {
@@ -90,13 +126,14 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: var(--nav-h);
+  min-height: calc(var(--nav-h) + var(--nav-safe));
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-  background: rgba(255, 252, 246, 0.92);
+  gap: 8px;
+  padding: 12px 12px calc(12px + var(--nav-safe));
+  background: rgba(255, 252, 246, 0.96);
   border-top: 1px solid var(--line);
+  box-shadow: 0 -8px 24px rgba(28, 36, 33, 0.06);
   backdrop-filter: blur(12px);
   z-index: 20;
 }
@@ -106,16 +143,19 @@
   border: 0;
   background: transparent;
   color: var(--muted);
-  border-radius: 14px;
+  border-radius: 16px;
+  min-height: 52px;
+  padding: 10px 6px;
   display: grid;
   place-items: center;
-  font-size: 0.92rem;
+  font-size: 1rem;
+  font-weight: 560;
 }
 
 .nav-item.active {
   color: var(--brand);
   background: var(--brand-soft);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .badge {
@@ -442,7 +482,7 @@
 .toast {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--nav-h) + 18px);
+  bottom: calc(var(--nav-h) + var(--nav-safe) + 18px);
   transform: translateX(-50%);
   max-width: min(92vw, 420px);
   background: #1c2421;

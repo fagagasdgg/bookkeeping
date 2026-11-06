@@ -5,6 +5,7 @@ import {
   addSmsFilter,
   getSmsFilters,
   removeSmsFilter,
+  probeFilterSenders,
   scanAllSmsFilters,
   scanSmsByFilter,
 } from '../../services/smsFilters';
@@ -219,18 +220,22 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
 
       <section className="panel">
         <h2>短信来源</h2>
+        <p className="muted small">
+          显示名称会参与正文匹配（如「工商银行」可匹配短信里的【工商银行】）。银行号码请填短信发件号码（工行常见
+          95588），不要填你自己的手机号。号码与关键词为「或」关系，命中任一即可。
+        </p>
         <div className="form-grid">
           <label className="field">
             <span>显示名称</span>
             <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="如：工商银行" />
           </label>
           <label className="field">
-            <span>号码（可选）</span>
+            <span>发件号码（可选）</span>
             <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="如：95588" />
           </label>
           <label className="field">
             <span>备注关键词（可选）</span>
-            <input value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="如：工商银行" />
+            <input value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="如：工商银行 / 财付通" />
           </label>
         </div>
         <div className="btn-row">
@@ -255,7 +260,7 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
 
         <ul className="filter-list">
           {filters.length === 0 ? (
-            <li className="muted">还没有短信来源。号码与备注可二选一或都填。</li>
+            <li className="muted">还没有短信来源。名称、号码、备注可任填一项或多项。</li>
           ) : (
             filters.map((f) => (
               <li key={f.id} className="filter-row">
@@ -265,9 +270,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                     {f.address ? `号码 ${f.address}` : '未填号码'}
                     {' · '}
                     {f.remark ? `备注 ${f.remark}` : '未填备注'}
+                    {' · '}
+                    id {f.id.slice(-6)}
                   </p>
                 </div>
-                <div className="btn-row compact">
+                <div className="filter-actions">
                   <button
                     type="button"
                     className="ghost-btn"
@@ -275,10 +282,46 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                     onClick={async () => {
                       setBusy(true);
                       try {
-                        const { matched, results } = await scanSmsByFilter(f);
+                        const samples = await probeFilterSenders(f);
+                        if (samples.length === 0) {
+                          toast(
+                            `未探测到含「${f.address || f.label}」的短信。请确认已授权短信权限，并到系统短信里点开该会话看真实发件号码。`,
+                          );
+                        } else {
+                          const addrs = [...new Set(samples.map((s) => s.address))].slice(0, 6).join(' / ');
+                          toast(`探测到 ${samples.length} 条相关短信，真实发件号示例：${addrs}`);
+                        }
+                      } catch (e) {
+                        toast(e instanceof Error ? e.message : '探测失败（多半是短信权限未开）');
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    探测发件号
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        const { matched, results, scanned, sampleAddresses } = await scanSmsByFilter(f);
                         const created = results.filter((r) => r.action === 'created' || r.action === 'merged').length;
                         const dup = results.filter((r) => r.action === 'duplicate').length;
-                        toast(`「${f.label}」匹配 ${matched}，写入 ${created}，跳过重复 ${dup}`);
+                        const failed = results.filter((r) => r.action === 'parse_failed').length;
+                        if (matched === 0) {
+                          toast(
+                            scanned === 0
+                              ? `「${f.label}」收件箱未读到相关短信（权限？或真实发件号不是 ${f.address || '所填号码'}）。请先点「探测发件号」。`
+                              : `「${f.label}」初筛 ${scanned} 条但未通过匹配。读到的发件号示例：${sampleAddresses.join(' / ') || '无'}`,
+                          );
+                        } else {
+                          toast(
+                            `「${f.label}」匹配 ${matched}，写入 ${created}，跳过重复 ${dup}${failed ? `，解析失败 ${failed}` : ''}`,
+                          );
+                        }
                       } catch (e) {
                         toast(e instanceof Error ? e.message : '检索失败');
                       } finally {
@@ -292,11 +335,15 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                     type="button"
                     className="danger-btn"
                     onClick={async () => {
+                      const ok = window.confirm(
+                        `确认删除短信来源「${f.label}」？\n号码：${f.address || '无'}\n备注：${f.remark || '无'}\n仅删除来源配置，不会删除已记账流水。`,
+                      );
+                      if (!ok) return;
                       await removeSmsFilter(f.id);
-                      toast('已删除来源');
+                      toast(`已删除来源「${f.label}」`);
                     }}
                   >
-                    删除
+                    删除此来源
                   </button>
                 </div>
               </li>
@@ -317,11 +364,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                 __debugPushWebSms({
                   id: Date.now(),
                   address: '95588',
-                  body: '您尾号1234卡10:21支付宝快捷支付人民币88.00元，商户美团。',
+                  body: '尾号1234卡11月5日12:33支出(转账财付通-微信红包)200元，余额1,234.56元。【工商银行】',
                   date: Date.now(),
                   person: '工商银行',
                 });
-                toast('已注入样例短信到内存收件箱，请添加来源后检索');
+                toast('已注入工行样例短信，请用名称「工商银行」或号码 95588 添加来源后检索');
               }}
             >
               注入样例银行短信

@@ -9,6 +9,7 @@ const PERIODS: Array<{ id: PeriodKind; label: string }> = [
   { id: 'day', label: '日' },
   { id: 'week', label: '周' },
   { id: 'month', label: '月' },
+  { id: 'year', label: '年' },
 ];
 
 export function StatsScreen() {

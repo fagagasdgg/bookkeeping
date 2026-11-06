@@ -87,7 +87,7 @@ public class SmsReaderPlugin extends Plugin {
 
         String address = call.getString("address");
         String bodyContains = call.getString("bodyContains");
-        int limit = call.getInt("limit", 500);
+        int limit = call.getInt("limit", 2000);
 
         Uri uri = Telephony.Sms.Inbox.CONTENT_URI;
         ContentResolver resolver = getContext().getContentResolver();
@@ -99,29 +99,56 @@ public class SmsReaderPlugin extends Plugin {
             Telephony.Sms.PERSON
         };
 
+        // Prefer SQL LIKE so OEM-prefixed numbers like 1069...95588 still hit.
+        String selection = null;
+        String[] selectionArgs = null;
+        boolean hasAddress = address != null && !address.isEmpty();
+        boolean hasBody = bodyContains != null && !bodyContains.isEmpty();
+        if (hasAddress && hasBody) {
+            selection = "(" + Telephony.Sms.ADDRESS + " LIKE ? OR " + Telephony.Sms.BODY + " LIKE ? OR "
+                + Telephony.Sms.BODY + " LIKE ?)";
+            selectionArgs = new String[]{
+                "%" + address + "%",
+                "%" + bodyContains + "%",
+                "%" + address + "%"
+            };
+        } else if (hasAddress) {
+            selection = "(" + Telephony.Sms.ADDRESS + " LIKE ? OR " + Telephony.Sms.BODY + " LIKE ?)";
+            selectionArgs = new String[]{"%" + address + "%", "%" + address + "%"};
+        } else if (hasBody) {
+            selection = Telephony.Sms.BODY + " LIKE ?";
+            selectionArgs = new String[]{"%" + bodyContains + "%"};
+        }
+
         JSArray messages = new JSArray();
-        try (Cursor cursor = resolver.query(uri, projection, null, null, Telephony.Sms.DATE + " DESC")) {
+        try (Cursor cursor = resolver.query(
+            uri,
+            projection,
+            selection,
+            selectionArgs,
+            Telephony.Sms.DATE + " DESC"
+        )) {
             if (cursor != null) {
                 int count = 0;
                 while (cursor.moveToNext() && count < limit) {
                     String addr = cursor.getString(1);
                     String body = cursor.getString(2);
-                    if (address != null && !address.isEmpty()) {
+                    // Extra normalized digit check for address filters.
+                    if (hasAddress) {
                         String normWant = normalizePhone(address);
                         String normHave = normalizePhone(addr == null ? "" : addr);
                         boolean addrMatch =
                             normHave.equals(normWant)
-                                || normHave.endsWith(normWant)
-                                || normWant.endsWith(normHave)
+                                || normHave.contains(normWant)
+                                || normWant.contains(normHave)
                                 || (addr != null && addr.contains(address));
-                        if (!addrMatch && (bodyContains == null || bodyContains.isEmpty())) {
+                        boolean bodyMatch = hasBody && body != null
+                            && body.toLowerCase().contains(bodyContains.toLowerCase());
+                        boolean addressInBody = body != null && body.contains(address);
+                        if (!addrMatch && !bodyMatch && !addressInBody) {
                             continue;
                         }
-                        if (!addrMatch && bodyContains != null && !bodyContains.isEmpty()) {
-                            String blob = ((addr == null ? "" : addr) + "\n" + (body == null ? "" : body)).toLowerCase();
-                            if (!blob.contains(bodyContains.toLowerCase())) continue;
-                        }
-                    } else if (bodyContains != null && !bodyContains.isEmpty()) {
+                    } else if (hasBody) {
                         String blob = ((addr == null ? "" : addr) + "\n" + (body == null ? "" : body)).toLowerCase();
                         if (!blob.contains(bodyContains.toLowerCase())) continue;
                     }
@@ -144,6 +171,53 @@ public class SmsReaderPlugin extends Plugin {
 
         JSObject ret = new JSObject();
         ret.put("messages", messages);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void probeSenders(PluginCall call) {
+        if (!hasSmsPermission()) {
+            call.reject("READ_SMS permission not granted");
+            return;
+        }
+        int limit = call.getInt("limit", 80);
+        String needle = call.getString("needle", "");
+        Uri uri = Telephony.Sms.Inbox.CONTENT_URI;
+        ContentResolver resolver = getContext().getContentResolver();
+        String[] projection = new String[]{
+            Telephony.Sms.ADDRESS,
+            Telephony.Sms.BODY,
+            Telephony.Sms.DATE,
+            Telephony.Sms.PERSON
+        };
+        JSArray samples = new JSArray();
+        try (Cursor cursor = resolver.query(uri, projection, null, null, Telephony.Sms.DATE + " DESC")) {
+            if (cursor != null) {
+                int seen = 0;
+                while (cursor.moveToNext() && seen < limit) {
+                    String addr = cursor.getString(0);
+                    String body = cursor.getString(1);
+                    if (needle != null && !needle.isEmpty()) {
+                        String blob = ((addr == null ? "" : addr) + "\n" + (body == null ? "" : body));
+                        if (!blob.contains(needle)) continue;
+                    }
+                    JSObject row = new JSObject();
+                    row.put("address", addr == null ? "" : addr);
+                    row.put("person", cursor.isNull(3) ? "" : cursor.getString(3));
+                    row.put("date", cursor.getLong(2));
+                    String preview = body == null ? "" : body;
+                    if (preview.length() > 60) preview = preview.substring(0, 60) + "…";
+                    row.put("preview", preview);
+                    samples.put(row);
+                    seen++;
+                }
+            }
+        } catch (Exception e) {
+            call.reject("probeSenders failed: " + e.getMessage(), e);
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("samples", samples);
         call.resolve(ret);
     }
 

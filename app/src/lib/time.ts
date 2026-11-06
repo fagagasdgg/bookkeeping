@@ -25,6 +25,13 @@ export function periodRange(kind: PeriodKind, anchor = Date.now()): { start: num
     const end = endOfDay(start + 6 * 24 * 60 * 60 * 1000);
     return { start, end };
   }
+  if (kind === 'year') {
+    const d = new Date(dayStart);
+    d.setMonth(0, 1);
+    const start = d.getTime();
+    d.setFullYear(d.getFullYear() + 1, 0, 0);
+    return { start, end: endOfDay(d.getTime()) };
+  }
   const d = new Date(dayStart);
   d.setDate(1);
   const start = d.getTime();
@@ -37,6 +44,7 @@ export function shiftPeriod(kind: PeriodKind, anchor: number, delta: number): nu
   const d = new Date(anchor);
   if (kind === 'day') d.setDate(d.getDate() + delta);
   else if (kind === 'week') d.setDate(d.getDate() + delta * 7);
+  else if (kind === 'year') d.setFullYear(d.getFullYear() + delta);
   else d.setMonth(d.getMonth() + delta);
   return d.getTime();
 }
@@ -58,6 +66,7 @@ export function formatPeriodLabel(kind: PeriodKind, anchor: number): string {
   const day = String(d.getDate()).padStart(2, '0');
   if (kind === 'day') return `${y}-${m}-${day}`;
   if (kind === 'month') return `${y}-${m}`;
+  if (kind === 'year') return `${y}年`;
   const { start, end } = periodRange('week', anchor);
   const a = new Date(start);
   const b = new Date(end);

@@ -75,6 +75,12 @@ export function OnboardingScreen({ onFinished }: Props) {
               <li>短信权限 — 读取/检索银行动账短信</li>
               <li>电池优化白名单 — 降低被系统杀掉导致漏记的风险</li>
             </ul>
+            <div className="callout warn">
+              <strong>重要：微信通知内容必须可见。</strong>
+              若微信开启了「通知显示详情 / 锁屏显示内容」的关闭项，或仅提示「你收到一条微信消息」而不含金额商户，本应用
+              <em>无法</em>
+              解析这笔消费。请到微信 → 设置 → 通知，打开通知详情显示；支付宝同理。
+            </div>
             {!Capacitor.isNativePlatform() ? (
               <p className="muted small">
                 当前是浏览器预览，权限步骤可点「下一步」跳过；真机安装后才会真正生效。
@@ -95,6 +101,9 @@ export function OnboardingScreen({ onFinished }: Props) {
             <p className="lead">
               系统不会开放微信/支付宝账单 API。开启通知使用权后，才能在付款成功时自动记账。历史通知无法回放，只捕获授权之后的新通知。
             </p>
+            <div className="callout warn">
+              若微信/支付宝把通知隐藏成「收到一条消息」而不含金额，软件同样读不到交易内容。请保持通知详情展示开启。
+            </div>
             <p className="status-line">
               状态：
               {snap?.notifyEnabled ? <span className="ok">已开启</span> : <span className="warn">未开启</span>}

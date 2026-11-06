@@ -12,7 +12,7 @@ const INCOME_HINT = /收入|入账|存入|转入|收款|到账|退款/;
 
 function extractCardLast4(text: string): string | undefined {
   const m =
-    text.match(/(?:尾号|卡号|账户)\s*[*Xx]*\s*(\d{4})/) ||
+    text.match(/(?:尾号|卡号|账户)\s*[*Xx×]{0,8}\s*(\d{4})/) ||
     text.match(/\*{2,}(\d{4})/) ||
     text.match(/（(\d{4})）/);
   return m?.[1];
@@ -20,6 +20,8 @@ function extractCardLast4(text: string): string | undefined {
 
 function extractMerchant(text: string, title?: string): string {
   const patterns = [
+    // 工行等：支出(转账财付通-微信红包)200元
+    /(?:支出|收入|消费|支付)\s*[(（]([^)）]{2,40})[)）]/,
     /(?:商户|在|向)([\u4e00-\u9fa5A-Za-z0-9（）()·\-_]{2,30})(?:完成|支付|消费|付款)/,
     /成功(?:支付|付款)(?:给|向)?([\u4e00-\u9fa5A-Za-z0-9（）()·\-_]{2,30})/,
     /(?:消费|支付)([\u4e00-\u9fa5A-Za-z0-9（）()·\-_]{2,30})/,
@@ -35,18 +37,28 @@ function extractMerchant(text: string, title?: string): string {
 }
 
 function extractAmount(text: string): number | null {
-  const patterns = [
+  // Prefer amount tied to expense/income; avoid matching「余额xxxx元」
+  const preferred = [
+    /(?:支出|收入|消费|支付|扣款|入账|到账|转账)[^元]{0,48}?(\d[\d,]*(?:\.\d{1,2})?)\s*元/,
     /(?:人民币|RMB|￥|¥)\s*(-?\d[\d,]*(?:\.\d{1,2})?)/i,
-    /(-?\d[\d,]*(?:\.\d{1,2})?)\s*元/,
     /金额\s*[：:.]?\s*(-?\d[\d,]*(?:\.\d{1,2})?)/,
-    /(?:支付|付款|消费|支出|收入|入账|到账)\s*(?:人民币|RMB|￥|¥)?\s*(-?\d[\d,]*(?:\.\d{1,2})?)/,
   ];
-  for (const re of patterns) {
+  for (const re of preferred) {
     const m = text.match(re);
     if (m?.[1]) {
       const cents = parseYuanString(m[1]);
       if (cents != null && cents !== 0) return Math.abs(cents);
     }
+  }
+
+  // Fallback: first「N元」that is not after 余额
+  const all = [...text.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s*元/g)];
+  for (const m of all) {
+    const idx = m.index ?? 0;
+    const prefix = text.slice(Math.max(0, idx - 4), idx);
+    if (/余额/.test(prefix)) continue;
+    const cents = parseYuanString(m[1]);
+    if (cents != null && cents !== 0) return Math.abs(cents);
   }
   return null;
 }
@@ -65,6 +77,23 @@ function extractPayHint(text: string): ParsedCandidate['payChannelHint'] | undef
   return undefined;
 }
 
+function extractOccurredAt(text: string, fallback: number): number {
+  const now = new Date(fallback || Date.now());
+  // 11月5日12:33 / 11月5日 12:33
+  const m = text.match(/(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})/);
+  if (!m) return fallback || Date.now();
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const hour = Number(m[3]);
+  const minute = Number(m[4]);
+  const d = new Date(now.getFullYear(), month - 1, day, hour, minute, 0, 0);
+  // If parsed date is >2 days in the future, assume previous year
+  if (d.getTime() - now.getTime() > 2 * 24 * 60 * 60 * 1000) {
+    d.setFullYear(d.getFullYear() - 1);
+  }
+  return d.getTime();
+}
+
 export function parseCapture(raw: RawCapture): ParsedCandidate | null {
   const blob = `${raw.title ?? ''}\n${raw.body}`;
   const amountCents = extractAmount(blob);
@@ -75,11 +104,12 @@ export function parseCapture(raw: RawCapture): ParsedCandidate | null {
   if (EXPENSE_HINT.test(blob) || INCOME_HINT.test(blob)) confidence += 0.1;
   if (extractCardLast4(blob)) confidence += 0.05;
   if (raw.channel === 'notify') confidence += 0.05;
+  if (/财付通|微信红包|快捷支付/.test(blob)) confidence += 0.05;
 
   return {
     amountCents,
     direction: extractDirection(blob),
-    occurredAt: raw.occurredAt || Date.now(),
+    occurredAt: extractOccurredAt(blob, raw.occurredAt || Date.now()),
     merchant: extractMerchant(raw.body, raw.title),
     cardLast4: extractCardLast4(blob),
     payChannelHint: extractPayHint(blob),
@@ -88,5 +118,5 @@ export function parseCapture(raw: RawCapture): ParsedCandidate | null {
 }
 
 export function looksLikePaymentChannelSms(body: string): boolean {
-  return /支付宝|微信支付|财付通|快捷支付|云闪付|Apple\s*Pay|华为支付/.test(body);
+  return /支付宝|微信支付|财付通|快捷支付|云闪付|Apple\s*Pay|华为支付|微信红包/.test(body);
 }

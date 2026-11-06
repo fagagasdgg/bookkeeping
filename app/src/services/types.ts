@@ -94,7 +94,7 @@ export interface IngestResult {
   fingerprint: string;
 }
 
-export type PeriodKind = 'day' | 'week' | 'month';
+export type PeriodKind = 'day' | 'week' | 'month' | 'year';
 
 export interface PeriodSummary {
   expenseCents: number;

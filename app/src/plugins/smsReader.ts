@@ -14,10 +14,18 @@ export interface SmsQueryOptions {
   limit?: number;
 }
 
+export interface SmsSenderSample {
+  address: string;
+  person?: string;
+  date: number;
+  preview: string;
+}
+
 interface SmsReaderPlugin {
   checkPermission(): Promise<{ granted: boolean }>;
   requestPermission(): Promise<{ granted: boolean }>;
   queryInbox(options: SmsQueryOptions): Promise<{ messages: NativeSmsMessage[] }>;
+  probeSenders(options?: { limit?: number; needle?: string }): Promise<{ samples: SmsSenderSample[] }>;
   startWatching(): Promise<{ watching: boolean }>;
   stopWatching(): Promise<void>;
 }
@@ -42,16 +50,36 @@ export async function queryInboxSms(options: SmsQueryOptions = {}): Promise<Nati
   if (!Capacitor.isNativePlatform()) {
     return webStore
       .filter((m) => {
-        if (options.address && !m.address.includes(options.address)) return false;
+        if (options.address) {
+          const hitAddr = m.address.includes(options.address);
+          const hitBody = m.body.includes(options.address);
+          if (!hitAddr && !hitBody) return false;
+        }
         if (options.bodyContains && !`${m.body}${m.person || ''}`.includes(options.bodyContains)) {
           return false;
         }
         return true;
       })
-      .slice(0, options.limit ?? 500);
+      .slice(0, options.limit ?? 2000);
   }
   const res = await SmsReaderNative.queryInbox(options);
   return res.messages ?? [];
+}
+
+export async function probeSmsSenders(options?: {
+  limit?: number;
+  needle?: string;
+}): Promise<SmsSenderSample[]> {
+  if (!Capacitor.isNativePlatform()) {
+    return webStore.slice(0, options?.limit ?? 80).map((m) => ({
+      address: m.address,
+      person: m.person,
+      date: m.date,
+      preview: m.body.slice(0, 60),
+    }));
+  }
+  const res = await SmsReaderNative.probeSenders(options ?? {});
+  return res.samples ?? [];
 }
 
 export async function startSmsWatching(): Promise<boolean> {

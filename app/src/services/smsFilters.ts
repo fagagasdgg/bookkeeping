@@ -2,7 +2,7 @@ import { normalizePhone } from '../lib/hash';
 import { deleteSmsFilter, listSmsFilters, putSmsFilter } from './db';
 import { emitDataChange } from './events';
 import { ingestMany } from './ingest';
-import { queryInboxSms, type NativeSmsMessage } from '../plugins/smsReader';
+import { probeSmsSenders, queryInboxSms, type NativeSmsMessage, type SmsSenderSample } from '../plugins/smsReader';
 import type { IngestResult, SmsSourceFilter } from './types';
 
 export async function addSmsFilter(input: {
@@ -12,12 +12,13 @@ export async function addSmsFilter(input: {
 }): Promise<SmsSourceFilter> {
   const address = input.address?.trim();
   const remark = input.remark?.trim();
-  if (!address && !remark) {
-    throw new Error('请至少填写号码或备注');
+  const label = input.label.trim();
+  if (!address && !remark && !label) {
+    throw new Error('请至少填写显示名称、号码或备注之一');
   }
   const filter: SmsSourceFilter = {
     id: `smsf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-    label: input.label.trim() || remark || address || '未命名来源',
+    label: label || remark || address || '未命名来源',
     address: address || undefined,
     remark: remark || undefined,
     createdAt: Date.now(),
@@ -36,35 +37,64 @@ export async function getSmsFilters(): Promise<SmsSourceFilter[]> {
   return listSmsFilters();
 }
 
+/** Keywords used for body matching: remark first, then display label. */
+export function filterKeywords(filter: SmsSourceFilter): string[] {
+  const keys = [filter.remark, filter.label]
+    .map((s) => s?.trim())
+    .filter((s): s is string => !!s && s.length > 0);
+  return [...new Set(keys)];
+}
+
+export function addressMatches(smsAddress: string, wantRaw: string): boolean {
+  const want = normalizePhone(wantRaw);
+  const have = normalizePhone(smsAddress || '');
+  if (!want) return false;
+  return (
+    have === want ||
+    have.includes(want) ||
+    want.includes(have) ||
+    (smsAddress || '').includes(wantRaw)
+  );
+}
+
 export function matchSmsAgainstFilter(sms: NativeSmsMessage, filter: SmsSourceFilter): boolean {
-  const addr = normalizePhone(sms.address || '');
-  if (filter.address) {
-    const want = normalizePhone(filter.address);
-    if (want && (addr === want || addr.endsWith(want) || want.endsWith(addr))) {
-      return true;
-    }
+  const blob = `${sms.address}\n${sms.body}\n${sms.person || ''}`.toLowerCase();
+
+  const addressMatched = filter.address ? addressMatches(sms.address || '', filter.address) : false;
+  // Also treat the configured number appearing in body as a hit (some OEM rewrite ADDRESS).
+  const addressInBody =
+    !!filter.address && (sms.body || '').includes(filter.address);
+
+  const keywords = filterKeywords(filter);
+  const keywordMatched = keywords.some((k) => blob.includes(k.toLowerCase()));
+
+  if (filter.address && keywords.length > 0) {
+    return addressMatched || addressInBody || keywordMatched;
   }
-  if (filter.remark) {
-    const remark = filter.remark.toLowerCase();
-    const blob = `${sms.address}\n${sms.body}\n${sms.person || ''}`.toLowerCase();
-    if (blob.includes(remark)) return true;
-  }
-  // If only address was provided and didn't match, fail; if only remark, already checked
-  if (filter.address && !filter.remark) return false;
-  if (!filter.address && filter.remark) return false;
+  if (filter.address) return addressMatched || addressInBody;
+  if (keywords.length > 0) return keywordMatched;
   return false;
 }
 
 export async function scanSmsByFilter(filter: SmsSourceFilter): Promise<{
   matched: number;
   results: IngestResult[];
+  scanned: number;
+  sampleAddresses: string[];
 }> {
+  const keywords = filterKeywords(filter);
+
+  // Always include address in the native query when present.
+  // Also pass a keyword so SQL OR can catch OEM-rewritten sender numbers.
   const messages = await queryInboxSms({
     address: filter.address,
-    bodyContains: filter.remark,
-    limit: 500,
+    bodyContains: keywords[0],
+    limit: 2000,
   });
+
   const matched = messages.filter((m) => matchSmsAgainstFilter(m, filter));
+  const sampleAddresses = [...new Set(messages.map((m) => m.address).filter(Boolean))].slice(0, 8);
+
   const results = await ingestMany(
     matched.map((m) => ({
       channel: 'sms' as const,
@@ -76,7 +106,12 @@ export async function scanSmsByFilter(filter: SmsSourceFilter): Promise<{
       meta: { filterId: filter.id },
     })),
   );
-  return { matched: matched.length, results };
+  return { matched: matched.length, results, scanned: messages.length, sampleAddresses };
+}
+
+export async function probeFilterSenders(filter: SmsSourceFilter): Promise<SmsSenderSample[]> {
+  const needle = filter.address || filter.remark || filter.label || '';
+  return probeSmsSenders({ limit: 40, needle });
 }
 
 export async function scanAllSmsFilters(): Promise<{
