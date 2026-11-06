@@ -82,7 +82,7 @@ export function StatsScreen() {
         <section className="panel">
           <h2>分类支出</h2>
           {(summary?.byCategory.filter((c) => c.expenseCents > 0) ?? []).length === 0 ? (
-            <p className="muted">暂无分类数据。授权通知或检索短信后会出现在这里。</p>
+            <p className="muted">暂无分类数据。开启微信/支付宝通知捕获后会出现在这里。</p>
           ) : (
             <ul className="bar-list">
               {summary!.byCategory

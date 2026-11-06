@@ -54,7 +54,7 @@ export function LedgerScreen() {
       <div className="ledger-layout">
         <section className="panel list-panel">
           {items.length === 0 ? (
-            <p className="muted">还没有流水。去「来源」页开启通知或检索短信。</p>
+            <p className="muted">还没有流水。去「来源」页开启微信/支付宝通知使用权。</p>
           ) : (
             <ul className="txn-list">
               {items.map((txn) => (

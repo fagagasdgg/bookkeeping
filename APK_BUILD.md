@@ -28,5 +28,5 @@ adb install -r app\android\app\build\outputs\apk\debug\app-debug.apk
 
 ## 注意
 
-- 短信权限与通知使用权需在真机上手动授予
-- 首次安装后打开 App →「来源」页完成授权与短信来源配置
+- 通知使用权需在真机上手动授予
+- 首次安装后打开 App 完成引导；建议关闭电池优化并允许自启动/后台

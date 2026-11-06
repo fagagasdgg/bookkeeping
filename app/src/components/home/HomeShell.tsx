@@ -3,13 +3,10 @@ import { ensureDefaultCategoryRules } from '../../services/classify';
 import { ingestCapture } from '../../services/ingest';
 import {
   isPaymentPackage,
-  isSmsAppPackage,
-  looksLikeBankSmsNotification,
   onNotificationCaptured,
   startNotifyListener,
   getActiveNotifications,
 } from '../../plugins/notifyListener';
-import { startSmsWatching } from '../../plugins/smsReader';
 import { LedgerScreen } from '../ledger/LedgerScreen';
 import { ReviewScreen } from '../review/ReviewScreen';
 import { SourcesScreen } from '../sources/SourcesScreen';
@@ -59,38 +56,10 @@ export function HomeShell() {
     void ensureDefaultCategoryRules();
     bindNativeCaptureEvents();
     void startNotifyListener();
-    void startSmsWatching();
     void getActiveNotifications().then(async (list) => {
       for (const n of list) {
-        if (isPaymentPackage(n.packageName)) {
-          await ingestCapture({
-            channel: 'notify',
-            packageOrAddress: n.packageName,
-            title: n.title,
-            body: n.text,
-            occurredAt: n.postTime,
-            nativeId: n.key,
-          });
-          continue;
-        }
-        if (isSmsAppPackage(n.packageName) && looksLikeBankSmsNotification(n.title, n.text)) {
-          await ingestCapture({
-            channel: 'sms',
-            packageOrAddress: n.title || n.packageName,
-            title: n.title,
-            body: n.text,
-            occurredAt: n.postTime,
-            nativeId: n.key,
-            meta: { via: 'sms-app-notification' },
-          });
-        }
-      }
-    });
-
-    // nativeBridge already ingests; this covers in-app emits / tests with fingerprint dedupe.
-    const off = onNotificationCaptured((n) => {
-      if (isPaymentPackage(n.packageName)) {
-        void ingestCapture({
+        if (!isPaymentPackage(n.packageName)) continue;
+        await ingestCapture({
           channel: 'notify',
           packageOrAddress: n.packageName,
           title: n.title,
@@ -98,19 +67,19 @@ export function HomeShell() {
           occurredAt: n.postTime,
           nativeId: n.key,
         });
-        return;
       }
-      if (isSmsAppPackage(n.packageName) && looksLikeBankSmsNotification(n.title, n.text)) {
-        void ingestCapture({
-          channel: 'sms',
-          packageOrAddress: n.title || n.packageName,
-          title: n.title,
-          body: n.text,
-          occurredAt: n.postTime,
-          nativeId: n.key,
-          meta: { via: 'sms-app-notification' },
-        });
-      }
+    });
+
+    const off = onNotificationCaptured((n) => {
+      if (!isPaymentPackage(n.packageName)) return;
+      void ingestCapture({
+        channel: 'notify',
+        packageOrAddress: n.packageName,
+        title: n.title,
+        body: n.text,
+        occurredAt: n.postTime,
+        nativeId: n.key,
+      });
     });
     return off;
   }, [showOnboarding, ready]);
@@ -144,7 +113,7 @@ export function HomeShell() {
     <div className="app-shell">
       {permWarn ? (
         <div className="perm-banner">
-          <span>通知或短信权限未齐，自动记账可能漏记。</span>
+          <span>通知使用权未开启，自动记账可能漏记。</span>
           <button type="button" className="ghost-btn" onClick={() => setTab('sources')}>
             去设置
           </button>
