@@ -78,6 +78,10 @@ export const SMS_APP_PACKAGES = new Set([
   'com.coloros.mms',
   'com.oplus.mms',
   'com.vivo.mms',
+  'com.vivo.assistant',
+  'com.vivo.abe',
+  'com.bbk.sms',
+  'com.iqoo.secure',
   'com.android.mms.service',
 ]);
 

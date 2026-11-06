@@ -461,7 +461,9 @@ public class SmsReaderPlugin extends Plugin {
 
         int total = 0;
         int bankLike = 0;
-        // Scan full sms table — notification/service SMS still live here once OEM permission is on.
+        int icbcAddrCount = 0;
+        int icbcLedgerCount = 0;
+        // Scan full sms table — classic SMS only; OEM「服务号/智能短信」often NOT here.
         Uri uri = Telephony.Sms.CONTENT_URI;
         ContentResolver resolver = getContext().getContentResolver();
         String[] projection = new String[]{
@@ -479,6 +481,17 @@ public class SmsReaderPlugin extends Plugin {
                         rawAddresses.put(addr == null ? "(空地址)" : addr);
                     }
                     String blob = ((addr == null ? "" : addr) + "\n" + (body == null ? "" : body));
+                    boolean addr95588 = addr != null && addr.contains("95588");
+                    boolean body95588 = body != null && body.contains("95588");
+                    if (addr95588 || body95588) icbcAddrCount++;
+                    boolean hasAmount = body != null && (body.contains("元") || body.contains("￥") || body.contains("¥"));
+                    boolean ledgerHint = body != null && (
+                        body.contains("支出") || body.contains("收入") || body.contains("入账")
+                            || body.contains("扣款") || body.contains("尾号") || body.contains("工商银行")
+                    );
+                    if ((addr95588 || (body != null && body.contains("工商银行"))) && hasAmount && ledgerHint) {
+                        icbcLedgerCount++;
+                    }
                     if (blob.contains("95588")
                         || blob.contains("工商银行")
                         || blob.contains("财付通")
@@ -492,35 +505,55 @@ public class SmsReaderPlugin extends Plugin {
         } catch (Exception e) {
             ret.put("totalInbox", 0);
             ret.put("bankLikeCount", 0);
+            ret.put("icbcAddrCount", 0);
+            ret.put("icbcLedgerCount", 0);
             ret.put("likelyMissingNotificationSms", true);
+            ret.put("likelyServiceNumberIsolation", false);
             ret.put("rawAddresses", rawAddresses);
             ret.put("hint", "读取短信库失败：" + e.getMessage());
             call.resolve(ret);
             return;
         }
 
-        boolean likelyMissing = bankLike == 0;
+        // Classic SMS rows exist for 95588, but none look like ledger → OEM service-number UI.
+        boolean serviceIsolation = icbcAddrCount > 0 && icbcLedgerCount == 0;
+        boolean likelyMissing = bankLike == 0 || serviceIsolation;
         ret.put("totalInbox", total);
         ret.put("bankLikeCount", bankLike);
+        ret.put("icbcAddrCount", icbcAddrCount);
+        ret.put("icbcLedgerCount", icbcLedgerCount);
         ret.put("likelyMissingNotificationSms", likelyMissing);
+        ret.put("likelyServiceNumberIsolation", serviceIsolation);
         ret.put("rawAddresses", rawAddresses);
-        if (likelyMissing && isXiaomiFamily(manufacturer, brand)) {
+        if (serviceIsolation) {
+            ret.put(
+                "hint",
+                "标准短信库能看到 " + icbcAddrCount
+                    + " 条与 95588 相关，但 0 条动账正文。短信 App 里点开后的大量动账多半在「服务号/通知短信/智能短信」分区，厂商不开放给第三方读取。"
+                    + "历史动账读不到；请开通知使用权，靠之后短信通知实时记账。支付宝/微信走通知通道更稳。"
+            );
+        } else if (bankLike == 0 && isXiaomiFamily(manufacturer, brand)) {
             ret.put(
                 "hint",
                 "可读短信库 " + total + " 条，银行类 0。小米路径：设置→应用设置→本应用→其他权限→打开「通知类短信」。可再试「按正文扫描」。"
             );
-        } else if (likelyMissing && isVivoFamily(manufacturer, brand)) {
+        } else if (bankLike == 0 && isVivoFamily(manufacturer, brand)) {
             ret.put(
                 "hint",
-                "可读短信库 " + total + " 条，银行类 0。iQOO/vivo：设置→应用与权限→权限管理→短信，确认本应用可读取；并到应用详情打开相关权限。请优先用「按正文扫描动账短信」。"
+                "可读短信库 " + total + " 条，银行类 0。iQOO/vivo 动账常在「服务号」里，标准短信库读不到。"
+                    + "请开通知使用权做实时兜底；历史服务号消息无法回放。"
             );
-        } else if (likelyMissing) {
+        } else if (bankLike == 0) {
             ret.put(
                 "hint",
-                "可读短信库 " + total + " 条，银行类 0。请开通知类/服务短信权限，或用「按正文扫描」遍历最新短信正文关键字。"
+                "可读短信库 " + total + " 条，银行类 0。请开通知类/服务短信权限，或改用通知使用权捕获之后的动账通知。"
             );
         } else {
-            ret.put("hint", "可读短信库 " + total + " 条，其中疑似银行/支付相关 " + bankLike + " 条。可继续点检索或按正文扫描。");
+            ret.put(
+                "hint",
+                "可读短信库 " + total + " 条，其中疑似银行/支付相关 " + bankLike
+                    + " 条（95588 相关 " + icbcAddrCount + "，动账正文 " + icbcLedgerCount + "）。"
+            );
         }
         call.resolve(ret);
     }

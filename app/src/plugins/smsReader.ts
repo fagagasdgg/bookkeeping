@@ -30,7 +30,11 @@ export interface SmsInboxDiagnosis {
   oemLikelyVivoFamily?: boolean;
   totalInbox: number;
   bankLikeCount: number;
+  icbcAddrCount?: number;
+  icbcLedgerCount?: number;
   likelyMissingNotificationSms: boolean;
+  /** 95588 会话在标准库有几条，但动账正文为 0 → 服务号隔离 */
+  likelyServiceNumberIsolation?: boolean;
   hint: string;
   rawAddresses?: string[];
 }
@@ -146,15 +150,21 @@ export async function probeSmsSenders(options?: {
 
 export async function diagnoseSmsInbox(): Promise<SmsInboxDiagnosis> {
   if (!Capacitor.isNativePlatform()) {
+    const bankLikeCount = webStore.filter((m) =>
+      /95588|工商银行|财付通|支出|支付宝/.test(`${m.address}${m.body}`),
+    ).length;
     return {
       manufacturer: 'web',
       brand: 'web',
       permissionGranted: true,
       oemLikelyXiaomiFamily: false,
       totalInbox: webStore.length,
-      bankLikeCount: webStore.filter((m) => /95588|工商银行|财付通|支出|支付宝/.test(`${m.address}${m.body}`))
+      bankLikeCount,
+      icbcAddrCount: webStore.filter((m) => `${m.address}${m.body}`.includes('95588')).length,
+      icbcLedgerCount: webStore.filter((m) => /95588|工商银行/.test(`${m.address}${m.body}`) && /支出|收入|尾号/.test(m.body))
         .length,
       likelyMissingNotificationSms: false,
+      likelyServiceNumberIsolation: false,
       hint: '浏览器预览模式，使用内存样例短信。',
       rawAddresses: webStore.slice(0, 15).map((m) => m.address || '(空地址)'),
     };

@@ -145,12 +145,10 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
             可读取收件箱历史短信。配置号码或备注后点「检索」，与实时监听共用指纹去重，不会把同一条短信记两遍。
           </p>
           <div className="callout warn">
-            <strong>iQOO 关键：列表里 95588 只有一条，点开却有很多动账。</strong>
-            那是「会话」不是单条短信。请点「拉取 95588 会话全部动账」：先用 95588 定位会话，再把会话里每条短信整串读出并记账。
+            <strong>若「95588 会话只有几条且不是动账」——基本就是服务号隔离。</strong>
+            短信 App 点开后看到的大量对账，往往在「服务号 / 通知短信 / 智能短信」分区；厂商只给自己的短信 App 看，第三方即使用 READ_SMS 也读不到历史动账。
             <br />
-            也可继续用「按正文扫描」做兜底；命中后会打印系统真实发件号。
-            <br />
-            iQOO/vivo：设置 → 应用与权限 → 权限管理 → 短信，确认本应用可读取。
+            可行路径：① 打开上方「通知使用权」，之后新的工行动账通知可实时记账；② 支付宝/微信优先走通知；③ 历史服务号动账无法回放。
           </div>
           <p className="status-line">
             短信权限：{smsGranted ? <span className="ok">已授权</span> : <span className="warn">未授权</span>}
@@ -158,6 +156,18 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
               <>
                 {' · '}
                 可读 {smsDiag.totalInbox} 条 / 银行类 {smsDiag.bankLikeCount} 条
+                {typeof smsDiag.icbcAddrCount === 'number' ? (
+                  <>
+                    {' · '}
+                    95588 {smsDiag.icbcAddrCount} / 动账正文 {smsDiag.icbcLedgerCount ?? 0}
+                  </>
+                ) : null}
+                {smsDiag.likelyServiceNumberIsolation ? (
+                  <>
+                    {' · '}
+                    <span className="warn">疑似服务号隔离</span>
+                  </>
+                ) : null}
               </>
             ) : null}
           </p>
@@ -232,11 +242,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                   const failed = r.results.filter((x) => x.action === 'parse_failed').length;
                   if (r.conversationCount === 0) {
                     toast(
-                      '系统短信库里定位不到含 95588 的会话。请确认短信权限已开；若短信 App 能打开但这里为 0，多半是厂商「服务号/智能短信」未对第三方开放。',
+                      '标准短信库定位不到 95588。若短信 App 里能打开，动账多半在「服务号」分区，第三方读不到历史。请改开通知使用权做实时记账。',
                     );
                   } else if (r.matched === 0) {
                     toast(
-                      `已定位会话，共 ${r.conversationCount} 条短信（seed ${r.seedHits}），但未识别出动账正文。真实发件号：${r.discoveredSenders.slice(0, 4).join(' / ') || '无'}`,
+                      `标准库只读到会话 ${r.conversationCount} 条且无动账正文（发件号：${r.discoveredSenders.slice(0, 3).join(' / ') || '无'}）。App 里那一大串对账属于服务号/智能短信，历史无法拉取；请开通知使用权捕获之后的新通知。`,
                     );
                   } else {
                     toast(
