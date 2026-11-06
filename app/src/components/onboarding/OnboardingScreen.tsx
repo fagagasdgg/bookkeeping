@@ -8,7 +8,12 @@ import {
   requestIgnoreBatteryOptimizations,
 } from '../../plugins/backgroundKeep';
 import { openNotifyAccessSettings, startNotifyListener } from '../../plugins/notifyListener';
-import { requestSmsPermission, startSmsWatching } from '../../plugins/smsReader';
+import {
+  diagnoseSmsInbox,
+  openAppSmsPermissionSettings,
+  requestSmsPermission,
+  startSmsWatching,
+} from '../../plugins/smsReader';
 import {
   getPermissionSnapshot,
   markOnboardingCompleted,
@@ -150,9 +155,14 @@ export function OnboardingScreen({ onFinished }: Props) {
             <p className="lead">
               用于读取收件箱中的银行/支付短信，并支持按号码或备注「检索历史短信」。也会在新短信到达时尝试自动入库。
             </p>
+            <div className="callout warn">
+              <strong>银行短信（如 95588）常被标成「通知类短信」。</strong>
+              小米/红米等机型：系统「读取短信」开了还不够，必须再到应用权限里手动打开「通知类短信 /
+              服务短信」。否则 App 会显示权限已开，却一条工行短信都读不到。
+            </div>
             <p className="status-line">
               状态：
-              {snap?.smsGranted ? <span className="ok">已授权</span> : <span className="warn">未授权</span>}
+              {snap?.smsGranted ? <span className="ok">已授权系统短信</span> : <span className="warn">未授权</span>}
             </p>
             <div className="btn-row">
               <button
@@ -165,7 +175,7 @@ export function OnboardingScreen({ onFinished }: Props) {
                     const ok = await requestSmsPermission();
                     if (ok) {
                       await startSmsWatching();
-                      toast('短信权限已授予');
+                      toast('系统短信权限已授予；请继续开启通知类短信');
                     } else {
                       toast('未获得短信权限，可在系统设置中手动开启');
                     }
@@ -175,7 +185,36 @@ export function OnboardingScreen({ onFinished }: Props) {
                   }
                 }}
               >
-                申请短信权限
+                申请系统短信权限
+              </button>
+              <button
+                type="button"
+                className="primary-btn"
+                disabled={busy}
+                onClick={async () => {
+                  await openAppSmsPermissionSettings();
+                  toast('请打开「通知类短信/服务短信」后返回');
+                }}
+              >
+                打开通知类短信权限
+              </button>
+              <button
+                type="button"
+                className="ghost-btn"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const d = await diagnoseSmsInbox();
+                    toast(d.hint);
+                  } catch (e) {
+                    toast(e instanceof Error ? e.message : '诊断失败');
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                诊断能否读到银行短信
               </button>
               <button
                 type="button"

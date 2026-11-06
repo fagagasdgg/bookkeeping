@@ -21,11 +21,24 @@ export interface SmsSenderSample {
   preview: string;
 }
 
+export interface SmsInboxDiagnosis {
+  manufacturer: string;
+  brand: string;
+  permissionGranted: boolean;
+  oemLikelyXiaomiFamily: boolean;
+  totalInbox: number;
+  bankLikeCount: number;
+  likelyMissingNotificationSms: boolean;
+  hint: string;
+}
+
 interface SmsReaderPlugin {
   checkPermission(): Promise<{ granted: boolean }>;
   requestPermission(): Promise<{ granted: boolean }>;
   queryInbox(options: SmsQueryOptions): Promise<{ messages: NativeSmsMessage[] }>;
   probeSenders(options?: { limit?: number; needle?: string }): Promise<{ samples: SmsSenderSample[] }>;
+  diagnoseInbox(): Promise<SmsInboxDiagnosis>;
+  openAppPermissionSettings(): Promise<{ opened: boolean }>;
   startWatching(): Promise<{ watching: boolean }>;
   stopWatching(): Promise<void>;
 }
@@ -80,6 +93,29 @@ export async function probeSmsSenders(options?: {
   }
   const res = await SmsReaderNative.probeSenders(options ?? {});
   return res.samples ?? [];
+}
+
+export async function diagnoseSmsInbox(): Promise<SmsInboxDiagnosis> {
+  if (!Capacitor.isNativePlatform()) {
+    return {
+      manufacturer: 'web',
+      brand: 'web',
+      permissionGranted: true,
+      oemLikelyXiaomiFamily: false,
+      totalInbox: webStore.length,
+      bankLikeCount: webStore.filter((m) => /95588|工商银行|财付通|支出|支付宝/.test(`${m.address}${m.body}`))
+        .length,
+      likelyMissingNotificationSms: false,
+      hint: '浏览器预览模式，使用内存样例短信。',
+    };
+  }
+  return SmsReaderNative.diagnoseInbox();
+}
+
+export async function openAppSmsPermissionSettings(): Promise<boolean> {
+  if (!Capacitor.isNativePlatform()) return false;
+  const res = await SmsReaderNative.openAppPermissionSettings();
+  return !!res.opened;
 }
 
 export async function startSmsWatching(): Promise<boolean> {

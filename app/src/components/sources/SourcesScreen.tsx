@@ -13,8 +13,11 @@ import { subscribeDataChange } from '../../services/events';
 import type { SmsSourceFilter } from '../../services/types';
 import {
   checkSmsPermission,
+  diagnoseSmsInbox,
+  openAppSmsPermissionSettings,
   requestSmsPermission,
   startSmsWatching,
+  type SmsInboxDiagnosis,
   __debugPushWebSms,
 } from '../../plugins/smsReader';
 import {
@@ -47,6 +50,7 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
   const [address, setAddress] = useState('');
   const [remark, setRemark] = useState('');
   const [busy, setBusy] = useState(false);
+  const [smsDiag, setSmsDiag] = useState<SmsInboxDiagnosis | null>(null);
 
   const refresh = async () => {
     setFilters(await getSmsFilters());
@@ -56,6 +60,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
     setBatteryIgnored(battery.ignoring);
     setManufacturer(battery.manufacturer);
     setBrand(battery.brand);
+    try {
+      setSmsDiag(await diagnoseSmsInbox());
+    } catch {
+      setSmsDiag(null);
+    }
   };
 
   useEffect(() => {
@@ -133,9 +142,20 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
           <p className="muted">
             可读取收件箱历史短信。配置号码或备注后点「检索」，与实时监听共用指纹去重，不会把同一条短信记两遍。
           </p>
+          <div className="callout warn">
+            <strong>重要：95588/银行短信常被厂商标成「通知类短信」。</strong>
+            小米/红米等即使系统「读取短信」已开，默认仍读不到银行通知短信。请到应用权限里额外打开「通知类短信 / 服务短信 / 读写通知类短信」。这不是匹配规则问题。
+          </div>
           <p className="status-line">
             短信权限：{smsGranted ? <span className="ok">已授权</span> : <span className="warn">未授权</span>}
+            {smsDiag ? (
+              <>
+                {' · '}
+                可读 {smsDiag.totalInbox} 条 / 银行类 {smsDiag.bankLikeCount} 条
+              </>
+            ) : null}
           </p>
+          {smsDiag?.hint ? <p className="muted small">{smsDiag.hint}</p> : null}
           <div className="btn-row">
             <button
               type="button"
@@ -149,9 +169,40 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                 } else {
                   toast('未获得短信权限');
                 }
+                await refresh();
               }}
             >
               申请短信权限
+            </button>
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={async () => {
+                await openAppSmsPermissionSettings();
+                toast('请开启「通知类短信/服务短信」后返回，再点诊断或检索');
+                window.setTimeout(() => void refresh(), 1200);
+              }}
+            >
+              打开通知类短信权限
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const d = await diagnoseSmsInbox();
+                  setSmsDiag(d);
+                  toast(d.hint);
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : '诊断失败');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              诊断能否读到银行短信
             </button>
             <button
               type="button"
