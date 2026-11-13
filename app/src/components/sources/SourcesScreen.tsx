@@ -9,8 +9,12 @@ import {
   scanAllSmsFilters,
   scanSmsByAddress,
 } from '../../services/smsFilters';
-import { importSmsBackupFile } from '../../services/smsBackupImport';
+import {
+  pickAndPreviewSmsBackup,
+  type SmsBackupPreview,
+} from '../../services/smsBackupImport';
 import type { SmsSourceFilter } from '../../services/types';
+import { SmsBackupPreviewPanel } from './SmsBackupPreviewPanel';
 import {
   checkSmsPermission,
   openAppSmsPermissionSettings,
@@ -47,6 +51,7 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
   const [filters, setFilters] = useState<SmsSourceFilter[]>([]);
   const [address, setAddress] = useState('');
   const [label, setLabel] = useState('');
+  const [smsPreview, setSmsPreview] = useState<SmsBackupPreview | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = async () => {
@@ -318,10 +323,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
             )}
           </ul>
 
-          <h3 style={{ marginTop: 16 }}>导入短信备份文件</h3>
+          <h3 style={{ marginTop: 16 }}>导入短信备份并预览</h3>
           <p className="muted small">
-            支持 iQOO/vivo 短信 App「导出至存储设备」生成的 <code>.sms</code>（实为 ZIP，内含
-            message.xml），以及常见 SMS Backup &amp; Restore 的 <code>.xml</code>。可勾选只导入某号码的动账。
+            对齐 read 项目：真机用系统文件选择器（SAF）打开 Downloads 里的{' '}
+            <code>.sms</code>；先解析分类展示，确认后再决定是否导入动账。也支持常见 SMS Backup 的{' '}
+            <code>.xml</code>。
           </p>
           <input
             ref={fileInputRef}
@@ -334,25 +340,13 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
               if (!file) return;
               setBusy(true);
               try {
-                const r = await importSmsBackupFile(file, {
-                  addressFilter: address.trim() || undefined,
-                  ledgerOnly: true,
-                });
-                const created = r.results.filter((x) => x.action === 'created' || x.action === 'merged').length;
-                const dup = r.results.filter((x) => x.action === 'duplicate').length;
-                if (r.total === 0) {
-                  toast('文件里没有解析到短信记录');
-                } else if (r.matched === 0) {
-                  toast(
-                    `文件共 ${r.total} 条，未筛到动账${address.trim() ? `（号码过滤：${address.trim()}）` : ''}。可读发件号示例：${r.sampleAddresses.slice(0, 5).join(' / ') || '无'}`,
-                  );
-                } else {
-                  toast(
-                    `文件 ${r.total} 条 → 动账 ${r.matched}，写入 ${created}，重复 ${dup}`,
-                  );
-                }
+                const preview = await pickAndPreviewSmsBackup(file);
+                setSmsPreview(preview);
+                toast(
+                  `已解析 ${preview.total} 条（动账 ${preview.ledgerCount}，发件人 ${preview.groups.length} 组），请在下方预览`,
+                );
               } catch (err) {
-                toast(err instanceof Error ? err.message : '导入失败');
+                toast(err instanceof Error ? err.message : '解析失败');
               } finally {
                 setBusy(false);
               }
@@ -363,13 +357,31 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
               type="button"
               className="primary-btn"
               disabled={busy}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={async () => {
+                if (!Capacitor.isNativePlatform()) {
+                  fileInputRef.current?.click();
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const preview = await pickAndPreviewSmsBackup();
+                  setSmsPreview(preview);
+                  toast(
+                    `已解析 ${preview.total} 条（动账 ${preview.ledgerCount}，发件人 ${preview.groups.length} 组），请在下方预览`,
+                  );
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : '选择/解析失败';
+                  if (!/未选择|cancel/i.test(msg)) toast(msg);
+                } finally {
+                  setBusy(false);
+                }
+              }}
             >
-              选择 .sms / .xml 导入动账
+              选择 .sms / .xml 并预览
             </button>
           </div>
           <p className="muted small">
-            若上方「发件号码」已填写，导入时只保留该号码相关动账；留空则导入文件中全部动账短信。
+            可选：先在上方填发件号码（如 95588），预览里会按该号码过滤；确认后再点「导入当前筛选的动账」。
           </p>
         </section>
 
@@ -414,6 +426,15 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
           </div>
         </section>
       </div>
+
+      {smsPreview ? (
+        <SmsBackupPreviewPanel
+          preview={smsPreview}
+          addressFilter={address}
+          onClose={() => setSmsPreview(null)}
+          onImported={() => void refresh()}
+        />
+      ) : null}
 
       {!Capacitor.isNativePlatform() ? (
         <section className="panel">
