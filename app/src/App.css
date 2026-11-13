@@ -580,6 +580,28 @@
   color: #2f7a58;
 }
 
+.sms-report-box {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: #f7f7f4;
+}
+
+.sms-report-pre {
+  margin: 10px 0 0;
+  max-height: min(55vh, 520px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #1c2421;
+  color: #e8efe9;
+  border-radius: 10px;
+  padding: 12px;
+}
+
 @media (max-width: 640px) {
   .stat-cards {
     grid-template-columns: 1fr;

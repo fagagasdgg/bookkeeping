@@ -343,7 +343,9 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                 const preview = await pickAndPreviewSmsBackup(file);
                 setSmsPreview(preview);
                 toast(
-                  `已解析 ${preview.total} 条（动账 ${preview.ledgerCount}，发件人 ${preview.groups.length} 组），请在下方预览`,
+                  preview.total > 0
+                    ? `已解析 ${preview.total} 条（动账 ${preview.ledgerCount}）。可预览或复制报告`
+                    : '解析到 0 条。请打开下方「解析报告」复制发给开发',
                 );
               } catch (err) {
                 toast(err instanceof Error ? err.message : '解析失败');
@@ -367,7 +369,9 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                   const preview = await pickAndPreviewSmsBackup();
                   setSmsPreview(preview);
                   toast(
-                    `已解析 ${preview.total} 条（动账 ${preview.ledgerCount}，发件人 ${preview.groups.length} 组），请在下方预览`,
+                    preview.total > 0
+                      ? `已解析 ${preview.total} 条（动账 ${preview.ledgerCount}）。可预览或复制报告`
+                      : '解析到 0 条。请打开下方「解析报告」复制发给开发',
                   );
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : '选择/解析失败';

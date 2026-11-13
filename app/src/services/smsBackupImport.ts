@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { FilePicker, type PickedFile } from '@capawesome/capacitor-file-picker';
-import { unzipSync, strFromU8 } from 'fflate';
+import { unzipSync, strFromU8, gunzipSync } from 'fflate';
 import { ingestMany } from './ingest';
 import { addressMatches, bodyLooksLikeLedgerSms } from './smsFilters';
 import type { IngestResult } from './types';
@@ -11,8 +11,8 @@ export interface ParsedBackupSms {
   date: number;
   type?: number;
   contactName?: string;
-  /** 启发式：是否像动账 */
   ledgerLike: boolean;
+  via?: string;
 }
 
 export interface SmsAddressGroup {
@@ -23,6 +23,25 @@ export interface SmsAddressGroup {
   messages: ParsedBackupSms[];
 }
 
+/** 可复制给开发者的解析诊断报告 */
+export interface SmsParseReport {
+  fileName: string;
+  byteLength: number;
+  magicHex: string;
+  kind: 'zip' | 'gzip' | 'xml' | 'text' | 'unknown';
+  zipEntries: string[];
+  chosenEntry?: string;
+  xmlHead: string;
+  xmlTail: string;
+  tagCounts: Record<string, number>;
+  attrCounts: Record<string, number>;
+  strategies: Array<{ name: string; count: number; sample?: string }>;
+  parseCount: number;
+  ledgerCount: number;
+  error?: string;
+  rawTextPreview?: string;
+}
+
 export interface SmsBackupPreview {
   fileName: string;
   total: number;
@@ -30,6 +49,8 @@ export interface SmsBackupPreview {
   otherCount: number;
   groups: SmsAddressGroup[];
   messages: ParsedBackupSms[];
+  report: SmsParseReport;
+  debug?: string;
 }
 
 function decodeXmlEntities(s: string): string {
@@ -43,72 +64,420 @@ function decodeXmlEntities(s: string): string {
     .replace(/&amp;/g, '&');
 }
 
-function attr(tag: string, name: string): string {
-  const re = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, 'i');
-  const m = tag.match(re);
+/** 支持跨行属性值 */
+function attr(blob: string, name: string): string {
+  const reDq = new RegExp(`\\b${name}\\s*=\\s*"([\\s\\S]*?)"`, 'i');
+  const m = blob.match(reDq);
   if (m) return decodeXmlEntities(m[1]);
-  const re2 = new RegExp(`\\b${name}\\s*=\\s*'([^']*)'`, 'i');
-  const m2 = tag.match(re2);
+  const reSq = new RegExp(`\\b${name}\\s*=\\s*'([\\s\\S]*?)'`, 'i');
+  const m2 = blob.match(reSq);
   return m2 ? decodeXmlEntities(m2[1]) : '';
 }
 
-/** Parse SMS Backup & Restore / vivo message.xml style content. */
-export function parseSmsXml(xml: string): ParsedBackupSms[] {
-  const out: ParsedBackupSms[] = [];
-  const re = /<sms\b([^>]*)\/?>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) {
-    const attrs = m[1] || '';
-    const body = attr(attrs, 'body');
-    const address = attr(attrs, 'address');
-    const dateRaw = attr(attrs, 'date');
-    const typeRaw = attr(attrs, 'type');
-    const date = Number(dateRaw);
-    if (!body) continue;
-    out.push({
-      address: address || '(空地址)',
-      body,
-      date: Number.isFinite(date) && date > 0 ? date : Date.now(),
-      type: typeRaw ? Number(typeRaw) : undefined,
-      contactName: attr(attrs, 'contact_name') || undefined,
-      ledgerLike: bodyLooksLikeLedgerSms(body),
-    });
+function firstText(
+  blob: string,
+  names: string[],
+): string {
+  for (const n of names) {
+    const v = attr(blob, n);
+    if (v.trim()) return v;
+  }
+  return '';
+}
+
+function toMessage(
+  fields: {
+    address?: string;
+    body?: string;
+    date?: string | number;
+    type?: string | number;
+    contactName?: string;
+  },
+  via: string,
+): ParsedBackupSms | null {
+  const body = (fields.body || '').trim();
+  if (!body) return null;
+  const dateNum = Number(fields.date);
+  return {
+    address: (fields.address || '').trim() || '(空地址)',
+    body,
+    date: Number.isFinite(dateNum) && dateNum > 0 ? dateNum : Date.now(),
+    type: fields.type != null && fields.type !== '' ? Number(fields.type) : undefined,
+    contactName: fields.contactName || undefined,
+    ledgerLike: bodyLooksLikeLedgerSms(body),
+    via,
+  };
+}
+
+function countTags(xml: string): Record<string, number> {
+  const names = [
+    'smses',
+    'sms',
+    'item',
+    'message',
+    'msg',
+    'mms',
+    'part',
+    'thread',
+    'conversation',
+    'record',
+    'row',
+  ];
+  const out: Record<string, number> = {};
+  for (const n of names) {
+    const c = (xml.match(new RegExp(`<${n}\\b`, 'gi')) || []).length;
+    if (c) out[n] = c;
   }
   return out;
 }
 
-function looksLikeXml(text: string): boolean {
-  const t = text.trimStart();
-  return t.startsWith('<?xml') || t.startsWith('<smses') || t.startsWith('<Smses') || t.includes('<sms');
-}
-
-function extractXmlFromZip(buf: Uint8Array): string {
-  const files = unzipSync(buf);
-  const names = Object.keys(files);
-  const prefer =
-    names.find((n) => /message\.xml$/i.test(n)) ||
-    names.find((n) => /\.xml$/i.test(n) && /sms|message/i.test(n)) ||
-    names.find((n) => /\.xml$/i.test(n));
-  if (!prefer) {
-    throw new Error('压缩包内未找到 message.xml，请确认是 vivo/iQOO 导出的 .sms 文件');
+function countAttrs(xml: string): Record<string, number> {
+  const names = ['body', 'content', 'text', 'msg', 'address', 'number', 'phone', 'date', 'time', 'type'];
+  const out: Record<string, number> = {};
+  for (const n of names) {
+    const c = (xml.match(new RegExp(`\\b${n}\\s*=`, 'gi')) || []).length;
+    if (c) out[n] = c;
   }
-  return strFromU8(files[prefer]);
+  return out;
 }
 
-export function parseSmsBackupBuffer(buf: Uint8Array, fileName = 'backup.sms'): ParsedBackupSms[] {
+/** 策略 A：标签属性（sms/item/message/msg/record/row） */
+function strategyAttrTags(xml: string): ParsedBackupSms[] {
+  const out: ParsedBackupSms[] = [];
+  const re = /<(sms|item|message|msg|record|row)\b([\s\S]*?)(\/?)>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const tag = (m[1] || '').toLowerCase();
+    const attrs = m[2] || '';
+    const hasBody = /\b(body|content|text|msg|message)\s*=/i.test(attrs);
+    // 容器根 <sms> 无正文属性
+    if ((tag === 'sms' || tag === 'smses') && !hasBody) continue;
+    const body = firstText(attrs, ['body', 'content', 'text', 'msg', 'message']);
+    const address = firstText(attrs, ['address', 'number', 'phone', 'from', 'sender']);
+    const msg = toMessage(
+      {
+        address,
+        body,
+        date: firstText(attrs, ['date', 'time', 'date_sent', 'timestamp']),
+        type: firstText(attrs, ['type']),
+        contactName: firstText(attrs, ['contact_name', 'person', 'name']),
+      },
+      `attr:${tag}`,
+    );
+    if (msg) out.push(msg);
+  }
+  return out;
+}
+
+/** 策略 B：DOMParser */
+function strategyDom(xml: string): ParsedBackupSms[] {
+  if (typeof DOMParser === 'undefined') return [];
+  const out: ParsedBackupSms[] = [];
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const tags = ['sms', 'item', 'message', 'msg', 'record', 'row'];
+    for (const tag of tags) {
+      for (const el of Array.from(doc.getElementsByTagName(tag))) {
+        const hasChildRecords = Array.from(el.children).some((c) =>
+          /^(sms|item|message|msg|record|row)$/i.test(c.tagName),
+        );
+        const bodyAttr =
+          el.getAttribute('body') ||
+          el.getAttribute('content') ||
+          el.getAttribute('text') ||
+          el.getAttribute('msg');
+        if (!bodyAttr && hasChildRecords) continue;
+        const body = (bodyAttr || el.textContent || '').trim();
+        if (!body || body.length > 20000) continue;
+        const msg = toMessage(
+          {
+            address:
+              el.getAttribute('address') ||
+              el.getAttribute('number') ||
+              el.getAttribute('phone') ||
+              '',
+            body,
+            date: el.getAttribute('date') || el.getAttribute('time') || '',
+            type: el.getAttribute('type') || '',
+            contactName: el.getAttribute('contact_name') || el.getAttribute('person') || '',
+          },
+          `dom:${tag}`,
+        );
+        if (msg) out.push(msg);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return out;
+}
+
+/** 策略 C：成对标签 <item>...</item> 内找属性或文本 */
+function strategyPairedTags(xml: string): ParsedBackupSms[] {
+  const out: ParsedBackupSms[] = [];
+  const re = /<(item|sms|message|msg|record)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const attrs = m[2] || '';
+    const inner = m[3] || '';
+    const body =
+      firstText(attrs, ['body', 'content', 'text']) ||
+      firstText(inner, ['body', 'content', 'text']) ||
+      inner.replace(/<[^>]+>/g, '').trim();
+    const address =
+      firstText(attrs, ['address', 'number', 'phone']) ||
+      firstText(inner, ['address', 'number', 'phone']);
+    const msg = toMessage(
+      {
+        address,
+        body,
+        date: firstText(attrs, ['date', 'time']) || firstText(inner, ['date', 'time']),
+        type: firstText(attrs, ['type']) || firstText(inner, ['type']),
+      },
+      `paired:${(m[1] || '').toLowerCase()}`,
+    );
+    if (msg) out.push(msg);
+  }
+  return out;
+}
+
+/** 策略 D：宽松正则抓 address=... body=... 邻近片段 */
+function strategyLooseFields(xml: string): ParsedBackupSms[] {
+  const out: ParsedBackupSms[] = [];
+  const re =
+    /address\s*=\s*["']([^"']+)["'][\s\S]{0,400}?body\s*=\s*["']([\s\S]*?)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const msg = toMessage(
+      { address: decodeXmlEntities(m[1]), body: decodeXmlEntities(m[2]) },
+      'loose:address-body',
+    );
+    if (msg) out.push(msg);
+  }
+  // body 在前 address 在后
+  const re2 =
+    /body\s*=\s*["']([\s\S]*?)["'][\s\S]{0,400}?address\s*=\s*["']([^"']+)["']/gi;
+  while ((m = re2.exec(xml))) {
+    const msg = toMessage(
+      { address: decodeXmlEntities(m[2]), body: decodeXmlEntities(m[1]) },
+      'loose:body-address',
+    );
+    if (msg) out.push(msg);
+  }
+  return out;
+}
+
+/** 策略 E：CSV（vivo 助手有时导 csv） */
+function strategyCsv(text: string): ParsedBackupSms[] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return [];
+  const header = lines[0].toLowerCase();
+  if (!/(address|号码|手机|body|内容|短信|date|时间)/.test(header)) return [];
+  const cols = lines[0].split(/[,;\t]/).map((c) => c.trim().replace(/^"|"$/g, ''));
+  const idx = (preds: RegExp[]) => cols.findIndex((c) => preds.some((p) => p.test(c)));
+  const iAddr = idx([/address/i, /号码/, /手机/, /phone/i]);
+  const iBody = idx([/body/i, /内容/, /短信/, /text/i]);
+  const iDate = idx([/date/i, /时间/, /time/i]);
+  if (iBody < 0) return [];
+  const out: ParsedBackupSms[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const parts = lines[i].split(/[,;\t]/).map((c) => c.trim().replace(/^"|"$/g, ''));
+    const msg = toMessage(
+      {
+        address: iAddr >= 0 ? parts[iAddr] : '',
+        body: parts[iBody],
+        date: iDate >= 0 ? parts[iDate] : '',
+      },
+      'csv',
+    );
+    if (msg) out.push(msg);
+  }
+  return out;
+}
+
+function dedupeMessages(list: ParsedBackupSms[]): ParsedBackupSms[] {
+  const seen = new Set<string>();
+  const out: ParsedBackupSms[] = [];
+  for (const m of list) {
+    const key = `${m.address}|${m.date}|${m.body.slice(0, 120)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
+}
+
+export function parseSmsXmlWithStrategies(xml: string): {
+  messages: ParsedBackupSms[];
+  strategies: Array<{ name: string; count: number; sample?: string }>;
+} {
+  const runs: Array<{ name: string; fn: () => ParsedBackupSms[] }> = [
+    { name: 'A-标签属性(sms/item/…)', fn: () => strategyAttrTags(xml) },
+    { name: 'B-DOMParser', fn: () => strategyDom(xml) },
+    { name: 'C-成对标签', fn: () => strategyPairedTags(xml) },
+    { name: 'D-宽松address/body', fn: () => strategyLooseFields(xml) },
+    { name: 'E-CSV启发式', fn: () => strategyCsv(xml) },
+  ];
+  const strategies: Array<{ name: string; count: number; sample?: string }> = [];
+  const merged: ParsedBackupSms[] = [];
+  for (const r of runs) {
+    let list: ParsedBackupSms[] = [];
+    try {
+      list = r.fn();
+    } catch {
+      list = [];
+    }
+    strategies.push({
+      name: r.name,
+      count: list.length,
+      sample: list[0] ? `${list[0].address} | ${list[0].body.slice(0, 60)}` : undefined,
+    });
+    merged.push(...list);
+  }
+  return { messages: dedupeMessages(merged), strategies };
+}
+
+function magicHex(buf: Uint8Array, n = 8): string {
+  return Array.from(buf.slice(0, n))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join(' ');
+}
+
+function decodeTextBuffer(buf: Uint8Array): string {
+  // UTF-16 LE BOM
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(buf);
+  }
+  // UTF-16 BE BOM
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    return new TextDecoder('utf-16be').decode(buf);
+  }
+  // UTF-8 BOM
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    return new TextDecoder('utf-8').decode(buf.subarray(3));
+  }
+  return new TextDecoder('utf-8').decode(buf);
+}
+
+function extractPayload(buf: Uint8Array): {
+  kind: SmsParseReport['kind'];
+  text: string;
+  zipEntries: string[];
+  chosenEntry?: string;
+} {
+  // ZIP
   if (buf.length >= 2 && buf[0] === 0x50 && buf[1] === 0x4b) {
-    return parseSmsXml(extractXmlFromZip(buf));
+    const files = unzipSync(buf);
+    const names = Object.keys(files);
+    const prefer =
+      names.find((n) => /(^|\/)message\.xml$/i.test(n)) ||
+      names.find((n) => /\.xml$/i.test(n) && /sms|message|msg/i.test(n)) ||
+      names.find((n) => /\.xml$/i.test(n)) ||
+      names.find((n) => /\.(txt|csv)$/i.test(n)) ||
+      names[0];
+    if (!prefer) {
+      return { kind: 'zip', text: '', zipEntries: names };
+    }
+    return {
+      kind: 'zip',
+      text: strFromU8(files[prefer]),
+      zipEntries: names,
+      chosenEntry: prefer,
+    };
   }
-  const text = new TextDecoder('utf-8').decode(buf);
-  if (looksLikeXml(text)) return parseSmsXml(text);
-  throw new Error(
-    `无法识别「${fileName}」。请使用 vivo/iQOO 导出的 .sms，或 SMS Backup & Restore 的 .xml`,
-  );
+  // GZIP
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    const inflated = gunzipSync(buf);
+    return { kind: 'gzip', text: decodeTextBuffer(inflated), zipEntries: [] };
+  }
+  const text = decodeTextBuffer(buf);
+  const kind = /<sms|<item|<smses|<message/i.test(text) ? 'xml' : 'text';
+  return { kind, text, zipEntries: [] };
+}
+
+export function parseSmsBackupBuffer(
+  buf: Uint8Array,
+  fileName = 'backup.sms',
+): { messages: ParsedBackupSms[]; report: SmsParseReport } {
+  const report: SmsParseReport = {
+    fileName,
+    byteLength: buf.byteLength,
+    magicHex: magicHex(buf),
+    kind: 'unknown',
+    zipEntries: [],
+    xmlHead: '',
+    xmlTail: '',
+    tagCounts: {},
+    attrCounts: {},
+    strategies: [],
+    parseCount: 0,
+    ledgerCount: 0,
+  };
+
+  try {
+    const payload = extractPayload(buf);
+    report.kind = payload.kind;
+    report.zipEntries = payload.zipEntries;
+    report.chosenEntry = payload.chosenEntry;
+    const text = payload.text || '';
+    report.xmlHead = text.slice(0, 500).replace(/\r/g, '');
+    report.xmlTail = text.slice(Math.max(0, text.length - 300)).replace(/\r/g, '');
+    report.tagCounts = countTags(text);
+    report.attrCounts = countAttrs(text);
+    report.rawTextPreview = text.slice(0, 800);
+
+    if (!text.trim()) {
+      report.error = '解压/解码后内容为空';
+      return { messages: [], report };
+    }
+
+    const { messages, strategies } = parseSmsXmlWithStrategies(text);
+    report.strategies = strategies;
+    report.parseCount = messages.length;
+    report.ledgerCount = messages.filter((m) => m.ledgerLike).length;
+    if (messages.length === 0) {
+      report.error = '多种策略均未解析出短信记录';
+    }
+    return { messages, report };
+  } catch (e) {
+    report.error = e instanceof Error ? e.message : String(e);
+    return { messages: [], report };
+  }
+}
+
+export function formatSmsParseReport(report: SmsParseReport): string {
+  const lines = [
+    '=== 短信备份解析报告（请整段复制发给开发） ===',
+    `文件名: ${report.fileName}`,
+    `字节数: ${report.byteLength}`,
+    `文件头(hex): ${report.magicHex}`,
+    `识别类型: ${report.kind}`,
+    report.zipEntries.length
+      ? `ZIP条目: ${report.zipEntries.slice(0, 30).join(' | ')}`
+      : 'ZIP条目: (无)',
+    report.chosenEntry ? `选用条目: ${report.chosenEntry}` : '',
+    `标签统计: ${JSON.stringify(report.tagCounts)}`,
+    `属性统计: ${JSON.stringify(report.attrCounts)}`,
+    `策略结果:`,
+    ...report.strategies.map(
+      (s) => `  - ${s.name}: ${s.count} 条${s.sample ? ` | 样例: ${s.sample}` : ''}`,
+    ),
+    `最终解析条数: ${report.parseCount}`,
+    `疑似动账: ${report.ledgerCount}`,
+    report.error ? `错误: ${report.error}` : '错误: (无)',
+    '--- 文件开头 500 字 ---',
+    report.xmlHead || '(空)',
+    '--- 文件结尾 300 字 ---',
+    report.xmlTail || '(空)',
+    '=== 报告结束 ===',
+  ];
+  return lines.filter(Boolean).join('\n');
 }
 
 export function buildSmsBackupPreview(
   messages: ParsedBackupSms[],
   fileName: string,
+  report: SmsParseReport,
 ): SmsBackupPreview {
   const sorted = [...messages].sort((a, b) => b.date - a.date);
   const byAddr = new Map<string, ParsedBackupSms[]>();
@@ -136,6 +505,8 @@ export function buildSmsBackupPreview(
     otherCount: sorted.length - ledgerCount,
     groups,
     messages: sorted,
+    report,
+    debug: formatSmsParseReport(report).slice(0, 400),
   };
 }
 
@@ -146,7 +517,6 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-/** 对齐 read：优先 data，其次 blob，再 convertFileSrc + fetch */
 async function readPickedFileBuffer(picked: PickedFile): Promise<ArrayBuffer> {
   if (picked.data) return base64ToArrayBuffer(picked.data);
   if (picked.blob) return picked.blob.arrayBuffer();
@@ -164,15 +534,16 @@ function pickedFileName(picked: PickedFile): string {
 }
 
 /**
- * 选文件并解析成预览（不入库）。
- * 真机：@capawesome/capacitor-file-picker（SAF）；浏览器：传入 File。
+ * 选文件并解析。即使 0 条也会返回带完整 report 的 preview，方便复制诊断。
  */
 export async function pickAndPreviewSmsBackup(webFile?: File): Promise<SmsBackupPreview> {
+  let fileName = 'backup.sms';
+  let buffer: ArrayBuffer;
+
   if (Capacitor.isNativePlatform()) {
     const result = await FilePicker.pickFiles({
       limit: 1,
       readData: true,
-      // .sms 常被标成 octet-stream / zip
       types: [
         'application/octet-stream',
         'application/zip',
@@ -184,18 +555,16 @@ export async function pickAndPreviewSmsBackup(webFile?: File): Promise<SmsBackup
     });
     const picked = result.files?.[0];
     if (!picked) throw new Error('未选择文件');
-    const fileName = pickedFileName(picked);
-    const buffer = await readPickedFileBuffer(picked);
-    const messages = parseSmsBackupBuffer(new Uint8Array(buffer), fileName);
-    if (messages.length === 0) throw new Error('文件里没有解析到短信记录');
-    return buildSmsBackupPreview(messages, fileName);
+    fileName = pickedFileName(picked);
+    buffer = await readPickedFileBuffer(picked);
+  } else {
+    if (!webFile) throw new Error('未选择文件');
+    fileName = webFile.name;
+    buffer = await webFile.arrayBuffer();
   }
 
-  if (!webFile) throw new Error('未选择文件');
-  const buffer = await webFile.arrayBuffer();
-  const messages = parseSmsBackupBuffer(new Uint8Array(buffer), webFile.name);
-  if (messages.length === 0) throw new Error('文件里没有解析到短信记录');
-  return buildSmsBackupPreview(messages, webFile.name);
+  const { messages, report } = parseSmsBackupBuffer(new Uint8Array(buffer), fileName);
+  return buildSmsBackupPreview(messages, fileName, report);
 }
 
 export async function importPreviewMessages(

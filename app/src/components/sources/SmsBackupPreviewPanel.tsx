@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { Clipboard } from '@capacitor/clipboard';
 import { formatDateTime } from '../../lib/time';
 import {
+  formatSmsParseReport,
   importPreviewMessages,
   type SmsBackupPreview,
 } from '../../services/smsBackupImport';
 import { toast } from '../common/AppToast';
 
-type ViewMode = 'groups' | 'ledger' | 'all';
+type ViewMode = 'report' | 'groups' | 'ledger' | 'all';
 
 interface Props {
   preview: SmsBackupPreview;
@@ -15,10 +18,29 @@ interface Props {
   onImported?: () => void;
 }
 
+async function copyText(text: string): Promise<void> {
+  if (Capacitor.isNativePlatform()) {
+    await Clipboard.write({ string: text });
+    return;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+}
+
 export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImported }: Props) {
-  const [mode, setMode] = useState<ViewMode>('groups');
+  const [mode, setMode] = useState<ViewMode>(preview.total === 0 ? 'report' : 'groups');
   const [openAddress, setOpenAddress] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const reportText = useMemo(() => formatSmsParseReport(preview.report), [preview.report]);
 
   const filteredMessages = useMemo(() => {
     let list = preview.messages;
@@ -42,12 +64,15 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
     <section className="panel sms-preview-panel">
       <header className="screen-header compact">
         <div>
-          <p className="eyebrow">短信备份预览</p>
+          <p className="eyebrow">短信备份预览 / 诊断</p>
           <h2>{preview.fileName}</h2>
           <p className="muted small">
             共 {preview.total} 条 · 疑似动账 {preview.ledgerCount} · 其他 {preview.otherCount}
             {addressFilter?.trim() ? ` · 号码过滤「${addressFilter.trim()}」` : ''}
           </p>
+          {preview.report.error ? (
+            <p className="warn small">解析未得到短信：{preview.report.error}</p>
+          ) : null}
         </div>
         <button type="button" className="ghost-btn" onClick={onClose}>
           关闭预览
@@ -55,6 +80,13 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
       </header>
 
       <div className="period-tabs" style={{ marginBottom: 12 }}>
+        <button
+          type="button"
+          className={mode === 'report' ? 'tab active' : 'tab'}
+          onClick={() => setMode('report')}
+        >
+          解析报告
+        </button>
         <button
           type="button"
           className={mode === 'groups' ? 'tab active' : 'tab'}
@@ -82,6 +114,20 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
         <button
           type="button"
           className="primary-btn"
+          onClick={async () => {
+            try {
+              await copyText(reportText);
+              toast('解析报告已复制，发给开发即可继续适配');
+            } catch (e) {
+              toast(e instanceof Error ? e.message : '复制失败');
+            }
+          }}
+        >
+          复制解析报告
+        </button>
+        <button
+          type="button"
+          className="ghost-btn"
           disabled={busy || preview.ledgerCount === 0}
           onClick={async () => {
             setBusy(true);
@@ -105,10 +151,19 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
         </button>
       </div>
 
+      {mode === 'report' ? (
+        <div className="sms-report-box">
+          <p className="muted small">
+            下面是文件结构与各策略解析结果。即使 0 条也能复制整段报告，方便继续改解析器。
+          </p>
+          <pre className="sms-report-pre">{reportText}</pre>
+        </div>
+      ) : null}
+
       {mode === 'groups' ? (
         <ul className="filter-list sms-group-list">
           {groups.length === 0 ? (
-            <li className="muted">没有匹配的发件人分组</li>
+            <li className="muted">没有匹配的发件人分组。请先看「解析报告」并复制发给开发。</li>
           ) : (
             groups.map((g) => {
               const open = openAddress === g.address;
@@ -140,7 +195,7 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
                           <div className="sms-msg-meta">
                             <span>{formatDateTime(m.date)}</span>
                             {m.ledgerLike ? <span className="chip ok">动账</span> : null}
-                            {m.type != null ? <span className="muted small">type={m.type}</span> : null}
+                            {m.via ? <span className="muted small">{m.via}</span> : null}
                           </div>
                           <p className="sms-msg-body">{m.body}</p>
                         </li>
@@ -155,10 +210,12 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
             })
           )}
         </ul>
-      ) : (
+      ) : null}
+
+      {mode === 'ledger' || mode === 'all' ? (
         <ul className="sms-msg-list flat">
           {filteredMessages.length === 0 ? (
-            <li className="muted">没有可显示的短信</li>
+            <li className="muted">没有可显示的短信。请打开「解析报告」复制诊断信息。</li>
           ) : (
             filteredMessages.slice(0, 200).map((m, i) => (
               <li key={`${m.address}-${m.date}-${i}`} className={m.ledgerLike ? 'sms-msg ledger' : 'sms-msg'}>
@@ -175,7 +232,7 @@ export function SmsBackupPreviewPanel({ preview, addressFilter, onClose, onImpor
             <li className="muted small">仅显示前 200 条，共 {filteredMessages.length} 条</li>
           ) : null}
         </ul>
-      )}
+      ) : null}
     </section>
   );
 }
