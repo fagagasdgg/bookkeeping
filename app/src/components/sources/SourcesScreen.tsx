@@ -5,8 +5,8 @@ import { subscribeDataChange } from '../../services/events';
 import {
   getActiveNotifications,
   isNotifyAccessEnabled,
-  isPaymentPackage,
   openNotifyAccessSettings,
+  shouldCaptureNotification,
   startNotifyListener,
 } from '../../plugins/notifyListener';
 import {
@@ -46,7 +46,7 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
       <header className="screen-header">
         <div>
           <p className="eyebrow">数据来源</p>
-          <h1>微信 / 支付宝通知</h1>
+          <h1>通知记账</h1>
         </div>
         {onRerunOnboarding ? (
           <button type="button" className="ghost-btn" onClick={() => void onRerunOnboarding()}>
@@ -59,11 +59,11 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
         <section className="panel">
           <h2>通知使用权</h2>
           <p className="muted">
-            只捕获支付宝、微信付款成功后的新通知；历史通知无法回放。监听由系统绑定，不必一直停留在前台，但需保持通知使用权开启，并尽量关闭对本应用的电池优化。
+            捕获微信、支付宝、银行 App，以及短信 App 弹出的「动账通知」。不读短信数据库（服务号历史仍读不到），但通知栏里那种带「尾号/支出/xx.xx」的提醒可以记账。历史已消失的通知无法回放。
           </p>
           <div className="callout warn">
-            <strong>微信通知详情必须可见。</strong>
-            若只显示「你收到一条微信消息」而不含金额/商户，本应用无法解析。请到微信 → 设置 → 通知，打开通知详情显示；支付宝同理。
+            <strong>你截图那种「工商银行 + 动账通知」正是这条路。</strong>
+            装新版后保持通知使用权开启；通知还在栏里时可点「启动并补扫通知栏」。微信请打开通知详情显示。
           </div>
           <p className="status-line">
             状态：{notifyEnabled ? <span className="ok">已开启</span> : <span className="warn">未开启</span>}
@@ -89,20 +89,22 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                 try {
                   const ok = await startNotifyListener();
                   const active = await getActiveNotifications();
-                  const payment = active.filter((n) => isPaymentPackage(n.packageName));
+                  const payment = active.filter((n) => shouldCaptureNotification(n));
                   const results = await ingestMany(
                     payment.map((n) => ({
                       channel: 'notify' as const,
                       packageOrAddress: n.packageName,
                       title: n.title,
-                      body: n.text,
+                      body: n.text || n.title,
                       occurredAt: n.postTime,
                       nativeId: n.key,
+                      meta: { via: 'notification-listener' },
                     })),
                   );
+                  const pkgs = [...new Set(payment.map((n) => n.packageName))].slice(0, 4).join(' / ');
                   toast(
                     ok
-                      ? `监听已启动，补扫通知栏 ${payment.length} 条，新建/合并 ${results.filter((r) => r.action === 'created' || r.action === 'merged').length} 笔`
+                      ? `监听已启动，补扫命中 ${payment.length} 条${pkgs ? `（${pkgs}）` : ''}，写入 ${results.filter((r) => r.action === 'created' || r.action === 'merged').length} 笔`
                       : '监听未就绪，请先开启通知使用权',
                   );
                 } catch (e) {

@@ -2,7 +2,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { ingestCapture } from '../services/ingest';
 import {
   emitNotificationCaptured,
-  isPaymentPackage,
+  shouldCaptureNotification,
   type NativeNotification,
 } from './notifyListener';
 
@@ -16,14 +16,15 @@ const NotifyEvents = registerPlugin<{
 let bound = false;
 
 function ingestNotification(n: NativeNotification): void {
-  if (!isPaymentPackage(n.packageName)) return;
+  if (!shouldCaptureNotification(n)) return;
   void ingestCapture({
     channel: 'notify',
     packageOrAddress: n.packageName,
     title: n.title,
-    body: n.text,
+    body: n.text || n.title,
     occurredAt: n.postTime,
     nativeId: n.key,
+    meta: { via: 'notification-listener' },
   });
 }
 

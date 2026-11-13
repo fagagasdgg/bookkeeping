@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { ensureDefaultCategoryRules } from '../../services/classify';
 import { ingestCapture } from '../../services/ingest';
 import {
-  isPaymentPackage,
   onNotificationCaptured,
+  shouldCaptureNotification,
   startNotifyListener,
   getActiveNotifications,
 } from '../../plugins/notifyListener';
@@ -58,27 +58,29 @@ export function HomeShell() {
     void startNotifyListener();
     void getActiveNotifications().then(async (list) => {
       for (const n of list) {
-        if (!isPaymentPackage(n.packageName)) continue;
+        if (!shouldCaptureNotification(n)) continue;
         await ingestCapture({
           channel: 'notify',
           packageOrAddress: n.packageName,
           title: n.title,
-          body: n.text,
+          body: n.text || n.title,
           occurredAt: n.postTime,
           nativeId: n.key,
+          meta: { via: 'notification-listener' },
         });
       }
     });
 
     const off = onNotificationCaptured((n) => {
-      if (!isPaymentPackage(n.packageName)) return;
+      if (!shouldCaptureNotification(n)) return;
       void ingestCapture({
         channel: 'notify',
         packageOrAddress: n.packageName,
         title: n.title,
-        body: n.text,
+        body: n.text || n.title,
         occurredAt: n.postTime,
         nativeId: n.key,
+        meta: { via: 'notification-listener' },
       });
     });
     return off;

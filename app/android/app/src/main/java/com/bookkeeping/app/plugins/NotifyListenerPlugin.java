@@ -95,14 +95,38 @@ public class NotifyListenerPlugin extends Plugin {
         JSObject data = new JSObject();
         data.put("key", sbn.getKey());
         data.put("packageName", sbn.getPackageName());
-        CharSequence titleCs = sbn.getNotification().extras.getCharSequence("android.title");
-        CharSequence textCs = sbn.getNotification().extras.getCharSequence("android.text");
-        if (textCs == null) {
-            textCs = sbn.getNotification().extras.getCharSequence("android.bigText");
-        }
-        data.put("title", titleCs == null ? "" : titleCs.toString());
-        data.put("text", textCs == null ? "" : textCs.toString());
+        String[] parts = extractTitleAndText(sbn);
+        data.put("title", parts[0]);
+        data.put("text", parts[1]);
         data.put("postTime", sbn.getPostTime());
         return data;
+    }
+
+    /** Prefer bigText / textLines so bank & smart-SMS notifications keep full ledger body. */
+    static String[] extractTitleAndText(StatusBarNotification sbn) {
+        android.os.Bundle extras = sbn.getNotification().extras;
+        CharSequence titleCs = extras.getCharSequence("android.title");
+        CharSequence textCs = extras.getCharSequence("android.bigText");
+        if (textCs == null) textCs = extras.getCharSequence("android.text");
+        if (textCs == null) {
+            CharSequence[] lines = extras.getCharSequenceArray("android.textLines");
+            if (lines != null && lines.length > 0) {
+                StringBuilder sb = new StringBuilder();
+                for (CharSequence line : lines) {
+                    if (line == null) continue;
+                    if (sb.length() > 0) sb.append('\n');
+                    sb.append(line);
+                }
+                textCs = sb;
+            }
+        }
+        if (textCs == null) textCs = extras.getCharSequence("android.subText");
+        String title = titleCs == null ? "" : titleCs.toString();
+        String text = textCs == null ? "" : textCs.toString();
+        // Some OEMs put the whole SMS into title and leave text empty.
+        if (text.isEmpty() && title.length() > 0) {
+            text = title;
+        }
+        return new String[]{title, text};
     }
 }

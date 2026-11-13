@@ -19,16 +19,12 @@ public class PaymentNotificationService extends NotificationListenerService {
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null) return;
-        CharSequence titleCs = sbn.getNotification().extras.getCharSequence("android.title");
-        CharSequence textCs = sbn.getNotification().extras.getCharSequence("android.text");
-        if (textCs == null) {
-            textCs = sbn.getNotification().extras.getCharSequence("android.bigText");
-        }
+        String[] parts = NotifyListenerPlugin.extractTitleAndText(sbn);
         NotifyListenerPlugin.emitNotification(
             sbn.getKey(),
             sbn.getPackageName(),
-            titleCs == null ? "" : titleCs.toString(),
-            textCs == null ? "" : textCs.toString(),
+            parts[0],
+            parts[1],
             sbn.getPostTime()
         );
     }

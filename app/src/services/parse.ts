@@ -38,8 +38,10 @@ function extractMerchant(text: string, title?: string): string {
 
 function extractAmount(text: string): number | null {
   // Prefer amount tied to expense/income; avoid matching「余额xxxx元」
+  // ICBC style often: 支出(消费 支付宝-xxx)16.50  or 16.50元
   const preferred = [
-    /(?:支出|收入|消费|支付|扣款|入账|到账|转账)[^元]{0,48}?(\d[\d,]*(?:\.\d{1,2})?)\s*元/,
+    /(?:支出|收入|消费|支付|扣款|入账|到账|转账)\s*[(（][^)）]{0,60}[)）]\s*(\d[\d,]*(?:\.\d{1,2})?)\s*元?/,
+    /(?:支出|收入|消费|支付|扣款|入账|到账|转账)[^元\d]{0,48}?(\d[\d,]*(?:\.\d{1,2})?)\s*元/,
     /(?:人民币|RMB|￥|¥)\s*(-?\d[\d,]*(?:\.\d{1,2})?)/i,
     /金额\s*[：:.]?\s*(-?\d[\d,]*(?:\.\d{1,2})?)/,
   ];
