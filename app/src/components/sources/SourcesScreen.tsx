@@ -1,5 +1,5 @@
 import { Capacitor } from '@capacitor/core';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ingestCapture, ingestMany } from '../../services/ingest';
 import { subscribeDataChange } from '../../services/events';
 import {
@@ -9,6 +9,7 @@ import {
   scanAllSmsFilters,
   scanSmsByAddress,
 } from '../../services/smsFilters';
+import { importSmsBackupFile } from '../../services/smsBackupImport';
 import type { SmsSourceFilter } from '../../services/types';
 import {
   checkSmsPermission,
@@ -46,6 +47,7 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
   const [filters, setFilters] = useState<SmsSourceFilter[]>([]);
   const [address, setAddress] = useState('');
   const [label, setLabel] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = async () => {
     setNotifyEnabled(await isNotifyAccessEnabled());
@@ -315,6 +317,60 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
               ))
             )}
           </ul>
+
+          <h3 style={{ marginTop: 16 }}>导入短信备份文件</h3>
+          <p className="muted small">
+            支持 iQOO/vivo 短信 App「导出至存储设备」生成的 <code>.sms</code>（实为 ZIP，内含
+            message.xml），以及常见 SMS Backup &amp; Restore 的 <code>.xml</code>。可勾选只导入某号码的动账。
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".sms,.xml,.zip,application/xml,text/xml"
+            style={{ display: 'none' }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (!file) return;
+              setBusy(true);
+              try {
+                const r = await importSmsBackupFile(file, {
+                  addressFilter: address.trim() || undefined,
+                  ledgerOnly: true,
+                });
+                const created = r.results.filter((x) => x.action === 'created' || x.action === 'merged').length;
+                const dup = r.results.filter((x) => x.action === 'duplicate').length;
+                if (r.total === 0) {
+                  toast('文件里没有解析到短信记录');
+                } else if (r.matched === 0) {
+                  toast(
+                    `文件共 ${r.total} 条，未筛到动账${address.trim() ? `（号码过滤：${address.trim()}）` : ''}。可读发件号示例：${r.sampleAddresses.slice(0, 5).join(' / ') || '无'}`,
+                  );
+                } else {
+                  toast(
+                    `文件 ${r.total} 条 → 动账 ${r.matched}，写入 ${created}，重复 ${dup}`,
+                  );
+                }
+              } catch (err) {
+                toast(err instanceof Error ? err.message : '导入失败');
+              } finally {
+                setBusy(false);
+              }
+            }}
+          />
+          <div className="btn-row">
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={busy}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              选择 .sms / .xml 导入动账
+            </button>
+          </div>
+          <p className="muted small">
+            若上方「发件号码」已填写，导入时只保留该号码相关动账；留空则导入文件中全部动账短信。
+          </p>
         </section>
 
         <section className="panel">
