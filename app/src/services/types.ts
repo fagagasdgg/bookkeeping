@@ -30,6 +30,14 @@ export interface TransactionSource {
   meta?: Record<string, string>;
 }
 
+export interface SmsSourceFilter {
+  id: string;
+  label: string;
+  address?: string;
+  remark?: string;
+  createdAt: number;
+}
+
 export interface CategoryRule {
   id: string;
   keyword: string;

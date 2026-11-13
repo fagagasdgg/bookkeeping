@@ -7,6 +7,7 @@ import {
   startNotifyListener,
   getActiveNotifications,
 } from '../../plugins/notifyListener';
+import { startSmsWatching } from '../../plugins/smsReader';
 import { LedgerScreen } from '../ledger/LedgerScreen';
 import { ReviewScreen } from '../review/ReviewScreen';
 import { SourcesScreen } from '../sources/SourcesScreen';
@@ -56,6 +57,7 @@ export function HomeShell() {
     void ensureDefaultCategoryRules();
     bindNativeCaptureEvents();
     void startNotifyListener();
+    void startSmsWatching();
     void getActiveNotifications().then(async (list) => {
       for (const n of list) {
         if (!shouldCaptureNotification(n)) continue;

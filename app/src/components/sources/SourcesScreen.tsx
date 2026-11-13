@@ -3,6 +3,21 @@ import { useEffect, useState } from 'react';
 import { ingestCapture, ingestMany } from '../../services/ingest';
 import { subscribeDataChange } from '../../services/events';
 import {
+  addSmsFilter,
+  getSmsFilters,
+  removeSmsFilter,
+  scanAllSmsFilters,
+  scanSmsByAddress,
+} from '../../services/smsFilters';
+import type { SmsSourceFilter } from '../../services/types';
+import {
+  checkSmsPermission,
+  openAppSmsPermissionSettings,
+  requestSmsPermission,
+  startSmsWatching,
+  __debugPushWebSms,
+} from '../../plugins/smsReader';
+import {
   getActiveNotifications,
   isNotifyAccessEnabled,
   openNotifyAccessSettings,
@@ -23,13 +38,19 @@ interface Props {
 
 export function SourcesScreen({ onRerunOnboarding }: Props) {
   const [notifyEnabled, setNotifyEnabled] = useState(false);
+  const [smsGranted, setSmsGranted] = useState(false);
   const [batteryIgnored, setBatteryIgnored] = useState(false);
   const [manufacturer, setManufacturer] = useState('');
   const [brand, setBrand] = useState('');
   const [busy, setBusy] = useState(false);
+  const [filters, setFilters] = useState<SmsSourceFilter[]>([]);
+  const [address, setAddress] = useState('');
+  const [label, setLabel] = useState('');
 
   const refresh = async () => {
     setNotifyEnabled(await isNotifyAccessEnabled());
+    setSmsGranted(await checkSmsPermission());
+    setFilters(await getSmsFilters());
     const battery = await getBatteryOptimizationStatus();
     setBatteryIgnored(battery.ignoring);
     setManufacturer(battery.manufacturer);
@@ -46,7 +67,7 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
       <header className="screen-header">
         <div>
           <p className="eyebrow">数据来源</p>
-          <h1>通知记账</h1>
+          <h1>通知与短信</h1>
         </div>
         {onRerunOnboarding ? (
           <button type="button" className="ghost-btn" onClick={() => void onRerunOnboarding()}>
@@ -59,12 +80,8 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
         <section className="panel">
           <h2>通知使用权</h2>
           <p className="muted">
-            捕获微信、支付宝、银行 App，以及短信 App 弹出的「动账通知」。不读短信数据库（服务号历史仍读不到），但通知栏里那种带「尾号/支出/xx.xx」的提醒可以记账。历史已消失的通知无法回放。
+            捕获微信、支付宝、银行 App，以及短信 App 弹出的「动账通知」。历史已消失的通知无法回放。
           </p>
-          <div className="callout warn">
-            <strong>你截图那种「工商银行 + 动账通知」正是这条路。</strong>
-            装新版后保持通知使用权开启；通知还在栏里时可点「启动并补扫通知栏」。微信请打开通知详情显示。
-          </div>
           <p className="status-line">
             状态：{notifyEnabled ? <span className="ok">已开启</span> : <span className="warn">未开启</span>}
           </p>
@@ -101,10 +118,9 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
                       meta: { via: 'notification-listener' },
                     })),
                   );
-                  const pkgs = [...new Set(payment.map((n) => n.packageName))].slice(0, 4).join(' / ');
                   toast(
                     ok
-                      ? `监听已启动，补扫命中 ${payment.length} 条${pkgs ? `（${pkgs}）` : ''}，写入 ${results.filter((r) => r.action === 'created' || r.action === 'merged').length} 笔`
+                      ? `监听已启动，补扫命中 ${payment.length} 条，写入 ${results.filter((r) => r.action === 'created' || r.action === 'merged').length} 笔`
                       : '监听未就绪，请先开启通知使用权',
                   );
                 } catch (e) {
@@ -121,9 +137,190 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
         </section>
 
         <section className="panel">
+          <h2>短信扫描</h2>
+          <p className="muted">
+            只需填写发件号码（如工行 95588）。授权后点「扫描动账」，会按该号码定位会话并自动筛出带金额的动账短信。
+          </p>
+          <div className="callout warn">
+            iQOO/vivo 上部分「服务号」动账可能不在标准短信库；若扫描为 0，请同时靠上方通知通道。
+          </div>
+          <p className="status-line">
+            短信权限：{smsGranted ? <span className="ok">已授权</span> : <span className="warn">未授权</span>}
+          </p>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={async () => {
+                const ok = await requestSmsPermission();
+                setSmsGranted(ok);
+                if (ok) {
+                  await startSmsWatching();
+                  toast('短信权限已授予，可扫描历史并接收新短信');
+                } else {
+                  toast('未获得短信权限');
+                }
+                await refresh();
+              }}
+            >
+              申请短信权限
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={async () => {
+                await openAppSmsPermissionSettings();
+                toast('请在应用权限中开启短信读取后返回');
+                window.setTimeout(() => void refresh(), 1200);
+              }}
+            >
+              打开应用权限页
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={busy || filters.length === 0}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const summary = await scanAllSmsFilters();
+                  toast(
+                    `全部扫描：动账 ${summary.matched}，新建 ${summary.created}，合并 ${summary.merged}，重复 ${summary.duplicate}`,
+                  );
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : '扫描失败');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              扫描全部已存号码
+            </button>
+          </div>
+
+          <div className="form-grid" style={{ marginTop: 12 }}>
+            <label className="field">
+              <span>发件号码</span>
+              <input
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="如：95588"
+              />
+            </label>
+            <label className="field">
+              <span>备注名（可选）</span>
+              <input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="如：工商银行"
+              />
+            </label>
+          </div>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={busy || !address.trim()}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  if (!smsGranted) {
+                    const ok = await requestSmsPermission();
+                    if (!ok) {
+                      toast('请先授予短信权限');
+                      return;
+                    }
+                    await startSmsWatching();
+                    setSmsGranted(true);
+                  }
+                  const existing = filters.find((f) => f.address === address.trim());
+                  if (!existing) {
+                    await addSmsFilter({ address: address.trim(), label: label.trim() || undefined });
+                  }
+                  const r = await scanSmsByAddress(address.trim(), label.trim() || undefined);
+                  const created = r.results.filter((x) => x.action === 'created' || x.action === 'merged').length;
+                  const dup = r.results.filter((x) => x.action === 'duplicate').length;
+                  if (r.scanned === 0) {
+                    toast(
+                      `号码「${address.trim()}」在标准短信库未读到会话。可再试通知补扫；服务号历史可能读不到。`,
+                    );
+                  } else {
+                    toast(
+                      `扫到 ${r.scanned} 条，动账 ${r.matched}，写入 ${created}，重复 ${dup}。发件号：${r.discoveredSenders.slice(0, 3).join(' / ') || '无'}`,
+                    );
+                  }
+                  setAddress('');
+                  setLabel('');
+                  await refresh();
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : '扫描失败');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              保存并扫描动账
+            </button>
+          </div>
+
+          <ul className="filter-list">
+            {filters.length === 0 ? (
+              <li className="muted">还没有短信号码。填发件号后点「保存并扫描动账」即可。</li>
+            ) : (
+              filters.map((f) => (
+                <li key={f.id} className="filter-row">
+                  <div>
+                    <strong>{f.label}</strong>
+                    <p className="muted small">号码 {f.address || '未填'}</p>
+                  </div>
+                  <div className="filter-actions">
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      disabled={busy || !f.address}
+                      onClick={async () => {
+                        if (!f.address) return;
+                        setBusy(true);
+                        try {
+                          const r = await scanSmsByAddress(f.address, f.label);
+                          const created = r.results.filter(
+                            (x) => x.action === 'created' || x.action === 'merged',
+                          ).length;
+                          toast(
+                            `「${f.label}」扫到 ${r.scanned}，动账 ${r.matched}，写入 ${created}`,
+                          );
+                        } catch (e) {
+                          toast(e instanceof Error ? e.message : '扫描失败');
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      扫描
+                    </button>
+                    <button
+                      type="button"
+                      className="danger-btn"
+                      onClick={async () => {
+                        const ok = window.confirm(`删除号码「${f.label}」？不会删除已记账流水。`);
+                        if (!ok) return;
+                        await removeSmsFilter(f.id);
+                        toast(`已删除「${f.label}」`);
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </li>
+              ))
+            )}
+          </ul>
+        </section>
+
+        <section className="panel">
           <h2>防杀后台 / 省电</h2>
           <p className="muted">
-            通知监听服务由系统托管，一般不用把应用一直开在前台。建议关闭本应用电池优化；国产机请额外允许自启动或后台运行，并在多任务里锁定应用，减少漏记。
+            建议关闭本应用电池优化；国产机请额外允许自启动或后台运行。
           </p>
           <p className="status-line">
             电池优化白名单：
@@ -165,8 +362,22 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
       {!Capacitor.isNativePlatform() ? (
         <section className="panel">
           <h2>浏览器调试</h2>
-          <p className="muted">当前为 Web 预览，原生通知不可用。可用下面按钮注入样例数据验证解析与去重。</p>
           <div className="btn-row">
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={async () => {
+                __debugPushWebSms({
+                  id: Date.now(),
+                  address: '95588',
+                  body: '尾号3007卡11月13日14:07支出(消费 支付宝-上海蒜芽信息科技有限公司)16.50元，余额100.00元。【工商银行】',
+                  date: Date.now(),
+                });
+                toast('已注入工行样例短信，号码填 95588 后扫描');
+              }}
+            >
+              注入样例银行短信
+            </button>
             <button
               type="button"
               className="ghost-btn"
@@ -182,22 +393,6 @@ export function SourcesScreen({ onRerunOnboarding }: Props) {
               }}
             >
               注入支付宝通知样例
-            </button>
-            <button
-              type="button"
-              className="ghost-btn"
-              onClick={async () => {
-                await ingestCapture({
-                  channel: 'notify',
-                  packageOrAddress: 'com.tencent.mm',
-                  title: '微信支付',
-                  body: '你已支付￥12.50给美团外卖',
-                  occurredAt: Date.now(),
-                });
-                toast('已注入微信通知样例');
-              }}
-            >
-              注入微信通知样例
             </button>
           </div>
         </section>

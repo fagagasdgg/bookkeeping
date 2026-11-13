@@ -3,6 +3,7 @@ import type {
   CategoryRule,
   NegativePair,
   ReviewItem,
+  SmsSourceFilter,
   Transaction,
   TransactionSource,
 } from './types';
@@ -18,10 +19,9 @@ interface BookkeepingDB extends DBSchema {
     value: TransactionSource;
     indexes: { 'by-fingerprint': string; 'by-transactionId': string };
   };
-  /** Legacy store kept so existing IndexedDB upgrades don't break. */
   smsFilters: {
     key: string;
-    value: { id: string; label: string; address?: string; remark?: string; createdAt: number };
+    value: SmsSourceFilter;
   };
   categoryRules: {
     key: string;
@@ -102,6 +102,22 @@ export async function getSourceByFingerprint(fp: string): Promise<TransactionSou
 export async function putSource(source: TransactionSource): Promise<void> {
   const db = await getDb();
   await db.put('sources', source);
+}
+
+export async function listSmsFilters(): Promise<SmsSourceFilter[]> {
+  const db = await getDb();
+  const all = await db.getAll('smsFilters');
+  return all.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function putSmsFilter(filter: SmsSourceFilter): Promise<void> {
+  const db = await getDb();
+  await db.put('smsFilters', filter);
+}
+
+export async function deleteSmsFilter(id: string): Promise<void> {
+  const db = await getDb();
+  await db.delete('smsFilters', id);
 }
 
 export async function listCategoryRules(): Promise<CategoryRule[]> {
